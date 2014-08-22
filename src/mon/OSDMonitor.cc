@@ -223,6 +223,15 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
     osdmap.encode(full_bl, f | CEPH_FEATURE_RESERVED);
     tx_size += full_bl.length();
 
+    // verify the crc is as expected
+    if (pending_inc.have_crc &&
+	pending_inc.full_crc != osdmap.crc) {
+      derr << "inc for epoch " << osdmap.get_epoch() << " has full_crc "
+	   << pending_inc.full_crc << " but actual is " << osdmap.crc
+	   << dendl;
+      assert(0 == "got mismatched crc encoding full map");
+    }
+
     put_version_full(t, osdmap.epoch, full_bl);
     put_version_latest_full(t, osdmap.epoch);
 
