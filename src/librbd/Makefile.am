@@ -3,9 +3,9 @@ librbd_la_SOURCES = \
 	librbd/AioCompletion.cc \
 	librbd/AioRequest.cc \
 	librbd/ImageCtx.cc \
+	librbd/ImageWatcher.cc \
 	librbd/internal.cc \
-	librbd/LibrbdWriteback.cc \
-	librbd/WatchCtx.cc
+	librbd/LibrbdWriteback.cc
 librbd_la_LIBADD = \
 	$(LIBRADOS) $(LIBOSDC) \
 	libcls_rbd_client.la libcls_lock_client.la \
@@ -26,8 +26,8 @@ noinst_HEADERS += \
 	librbd/AioCompletion.h \
 	librbd/AioRequest.h \
 	librbd/ImageCtx.h \
+	librbd/ImageWatcher.h \
 	librbd/internal.h \
 	librbd/LibrbdWriteback.h \
 	librbd/parent_types.h \
-	librbd/SnapInfo.h \
-	librbd/WatchCtx.h
+	librbd/SnapInfo.h
