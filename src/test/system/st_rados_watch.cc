@@ -96,8 +96,6 @@ run()
   rados_ioctx_destroy(io_ctx);
   rados_shutdown(cl);
 
-#pragma GCC diagnostic pop
-
   return r;
 }
 
