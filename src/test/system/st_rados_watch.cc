@@ -47,6 +47,9 @@ StRadosWatch::
 {
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 int StRadosWatch::
 run()
 {
@@ -88,9 +91,14 @@ run()
     r = 1;
   }
 
-  rados_unwatch(io_ctx, m_obj_name.c_str(), handle);
+  if (m_watch_retcode == 0)
+    rados_unwatch(io_ctx, m_obj_name.c_str(), handle);
   rados_ioctx_destroy(io_ctx);
   rados_shutdown(cl);
 
+#pragma GCC diagnostic pop
+
   return r;
 }
+
+#pragma GCC diagnostic pop

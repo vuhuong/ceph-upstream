@@ -486,20 +486,29 @@ static int do_put(IoCtx& io_ctx, const char *objname, const char *infile, int op
   return ret;
 }
 
-class RadosWatchCtx : public librados::WatchCtx {
+class RadosWatchCtx : public librados::WatchCtx2 {
+  IoCtx& ioctx;
   string name;
 public:
-  RadosWatchCtx(const char *imgname) : name(imgname) {}
+  RadosWatchCtx(IoCtx& io, const char *imgname) : ioctx(io), name(imgname) {}
   virtual ~RadosWatchCtx() {}
-  virtual void notify(uint8_t opcode, uint64_t ver, bufferlist& bl) {
-    string s;
-    try {
-      bufferlist::iterator iter = bl.begin();
-      ::decode(s, iter);
-    } catch (buffer::error *err) {
-      cout << "could not decode bufferlist, buffer length=" << bl.length() << std::endl;
-    }
-    cout << name << " got notification opcode=" << (int)opcode << " ver=" << ver << " msg='" << s << "'" << std::endl;
+  void handle_notify(uint64_t notify_id,
+		     uint64_t cookie,
+		     uint64_t notifier_id,
+		     bufferlist& bl) {
+    cout << "NOTIFY"
+	 << " cookie " << cookie
+	 << " notify_id " << notify_id
+	 << " from " << notifier_id
+	 << std::endl;
+    bl.hexdump(cout);
+    ioctx.notify_ack(name, notify_id, cookie, bl);
+  }
+  void handle_error(uint64_t cookie, int err) {
+    cout << "ERROR"
+	 << " cookie " << cookie
+	 << " err " << cpp_strerror(err)
+	 << std::endl;
   }
 };
 
@@ -2329,7 +2338,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (!pool_name || nargs.size() < 3)
       usage_exit();
 
-    ret = io_ctx.rollback(nargs[1], nargs[2]);
+    ret = io_ctx.snap_rollback(nargs[1], nargs[2]);
     if (ret < 0) {
       cerr << "error rolling back pool " << pool_name << " to snapshot " << nargs[1]
 	   << cpp_strerror(ret) << std::endl;
@@ -2376,9 +2385,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (!pool_name || nargs.size() < 2)
       usage_exit();
     string oid(nargs[1]);
-    RadosWatchCtx ctx(oid.c_str());
+    RadosWatchCtx ctx(io_ctx, oid.c_str());
     uint64_t cookie;
-    ret = io_ctx.watch(oid, 0, &cookie, &ctx);
+    ret = io_ctx.watch(oid, &cookie, &ctx);
     if (ret != 0)
       cerr << "error calling watch: " << ret << std::endl;
     else {
@@ -2391,11 +2400,32 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       usage_exit();
     string oid(nargs[1]);
     string msg(nargs[2]);
-    bufferlist bl;
+    bufferlist bl, replybl;
     ::encode(msg, bl);
-    ret = io_ctx.notify(oid, 0, bl);
+    ret = io_ctx.notify(oid, bl, 10000, &replybl);
     if (ret != 0)
       cerr << "error calling notify: " << ret << std::endl;
+    if (replybl.length()) {
+      map<pair<uint64_t,uint64_t>,bufferlist> rm;
+      set<pair<uint64_t,uint64_t> > missed;
+      bufferlist::iterator p = replybl.begin();
+      ::decode(rm, p);
+      ::decode(missed, p);
+      for (map<pair<uint64_t,uint64_t>,bufferlist>::iterator p = rm.begin();
+	   p != rm.end();
+	   ++p) {
+	cout << "reply client." << p->first.first
+	     << " cookie " << p->first.second
+	     << " : " << p->second.length() << " bytes" << std::endl;
+	if (p->second.length())
+	  p->second.hexdump(cout);
+      }
+      for (multiset<pair<uint64_t,uint64_t> >::iterator p = missed.begin();
+	   p != missed.end(); ++p) {
+	cout << "timeout client." << p->first
+	     << " cookie " << p->second << std::endl;
+      }
+    }
   } else if (strcmp(nargs[0], "set-alloc-hint") == 0) {
     if (!pool_name || nargs.size() < 4)
       usage_exit();
