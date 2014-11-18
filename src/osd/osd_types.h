@@ -2922,7 +2922,7 @@ public:
     list<OpRequestRef> waiters;  ///< ops waiting on state change
 
     /// if set, restart backfill when we can get a read lock
-    bool backfill_read_marker;
+    bool recovery_read_marker;
 
     /// if set, requeue snaptrim on lock release
     bool snaptrimmer_write_marker;
@@ -2930,7 +2930,7 @@ public:
     RWState()
       : state(RWNONE),
 	count(0),
-	backfill_read_marker(false),
+	recovery_read_marker(false),
 	snaptrimmer_write_marker(false)
     {}
     bool get_read(OpRequestRef op) {
@@ -2974,7 +2974,7 @@ public:
       if (!greedy) {
 	// don't starve anybody!
 	if (!waiters.empty() ||
-	    backfill_read_marker) {
+	    recovery_read_marker) {
 	  return false;
 	}
       }
@@ -3038,17 +3038,17 @@ public:
       return false;
     }
   }
-  bool get_backfill_read() {
-    rwstate.backfill_read_marker = true;
+  bool get_recovery_read() {
+    rwstate.recovery_read_marker = true;
     if (rwstate.get_read_lock()) {
       return true;
     }
     return false;
   }
-  void drop_backfill_read(list<OpRequestRef> *ls) {
-    assert(rwstate.backfill_read_marker);
+  void drop_recovery_read(list<OpRequestRef> *ls) {
+    assert(rwstate.recovery_read_marker);
     rwstate.put_read(ls);
-    rwstate.backfill_read_marker = false;
+    rwstate.recovery_read_marker = false;
   }
   void put_read(list<OpRequestRef> *to_wake) {
     rwstate.put_read(to_wake);
@@ -3057,8 +3057,8 @@ public:
 		 bool *requeue_recovery,
 		 bool *requeue_snaptrimmer) {
     rwstate.put_write(to_wake);
-    if (rwstate.empty() && rwstate.backfill_read_marker) {
-      rwstate.backfill_read_marker = false;
+    if (rwstate.empty() && rwstate.recovery_read_marker) {
+      rwstate.recovery_read_marker = false;
       *requeue_recovery = true;
     }
     if (rwstate.empty() && rwstate.snaptrimmer_write_marker) {
