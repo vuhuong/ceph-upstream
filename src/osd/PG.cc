@@ -2743,6 +2743,11 @@ void PG::add_log_entry(pg_log_entry_t& e, bufferlist& log_bl)
   dout(10) << "add_log_entry " << e << dendl;
 
   e.encode_with_checksum(log_bl);
+
+  // we might get log entries for missing objects since we can write to
+  // degraded objects
+  if (pg_log.get_missing().is_missing(e.soid))
+    pg_log.missing_add_event(e);
 }
 
 
