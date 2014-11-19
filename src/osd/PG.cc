@@ -2162,6 +2162,7 @@ void PG::purge_strays()
     } else {
       dout(10) << "not sending PGRemove to down osd." << *p << dendl;
     }
+    peer_missing.erase(*p);
     peer_info.erase(*p);
     peer_purged.insert(*p);
     removed = true;
