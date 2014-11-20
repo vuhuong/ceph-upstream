@@ -2159,6 +2159,12 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  // Check that object pool and pgid pool match
+  if (vm.count("object") && (uint64_t)pgid.pgid.m_pool != (uint64_t)ghobj.hobj.pool) {
+    cerr << "Object pool and pgid pool don't match" << std::endl;
+    return 1;
+  }
+
   ObjectStore *fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
   if (fs == NULL) {
     cerr << "Must provide --type (filestore, memstore, keyvaluestore-dev)" << std::endl;
