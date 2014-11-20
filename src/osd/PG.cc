@@ -1843,13 +1843,6 @@ void PG::all_activated_and_committed()
   assert(peer_activated.size() == actingbackfill.size());
   assert(!actingbackfill.empty());
 
-  // info.last_epoch_started is set during activate()
-  info.history.last_epoch_started = info.last_epoch_started;
-  state_clear(PG_STATE_CREATING);
-
-  share_pg_info();
-  publish_stats_to_osd();
-
   queue_peering_event(
     CephPeeringEvtRef(
       new CephPeeringEvt(
@@ -6477,7 +6470,14 @@ boost::statechart::result PG::RecoveryState::Active::react(const AllReplicasActi
   PG *pg = context< RecoveryMachine >().pg;
   all_replicas_activated = true;
 
+  pg->state_clear(PG_STATE_CREATING);
   pg->state_set(PG_STATE_ACTIVE);
+
+  // info.last_epoch_started is set during activate()
+  pg->info.history.last_epoch_started = pg->info.last_epoch_started;
+
+  pg->share_pg_info();
+  pg->publish_stats_to_osd();
 
   pg->check_local();
 
