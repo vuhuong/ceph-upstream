@@ -431,8 +431,9 @@ public:
     const SnapSet *snapset; // Old snapset
 
     ObjectState new_obs;  // resulting ObjectState
-    SnapSet new_snapset;  // resulting SnapSet (in case of a write)
-    //pg_stat_t new_stats;  // resulting Stats
+  private:
+    SnapSet *new_snapset;  ///< resulting SnapSet (in case of a write)
+  public:
     object_stat_sum_t delta_stats;
 
     bool modify;          // (force) modification (even if op_t is empty)
@@ -540,6 +541,7 @@ public:
 	      ReplicatedPG *_pg) :
       op(_op), reqid(_reqid), ops(_ops), obs(_obs), snapset(0),
       new_obs(_obs->oi, _obs->exists),
+      new_snapset(NULL),
       modify(false), user_modify(false), undirty(false), cache_evict(false),
       bytes_written(0), bytes_read(0), user_at_version(0),
       current_osd_subop_num(0),
@@ -554,17 +556,50 @@ public:
       on_finish(NULL),
       release_snapset_obc(false) {
       if (_ssc) {
-	new_snapset = _ssc->snapset;
 	snapset = &_ssc->snapset;
       }
     }
     void reset_obs(ObjectContextRef obc) {
       new_obs = ObjectState(obc->obs.oi, obc->obs.exists);
       if (obc->ssc) {
-	new_snapset = obc->ssc->snapset;
 	snapset = &obc->ssc->snapset;
       }
+      if (new_snapset) {
+	delete new_snapset;
+	new_snapset = NULL;
+      }
     }
+    const SnapSet *get_new_snapset() const {
+      if (new_snapset)
+	return new_snapset;
+      return snapset;
+    }
+    SnapSet *modify_snapset() {
+      if (!new_snapset) {
+	new_snapset = new SnapSet;
+	*new_snapset = *snapset;
+      }
+      return new_snapset;
+    }
+    bool is_new_snapset() const {
+      return new_snapset != NULL;
+    }
+    void set_new_snapset_head_exists(bool e) {
+      if (get_new_snapset()->head_exists != e)
+	modify_snapset()->head_exists = e;
+    }
+    void set_new_snapset_snapc_exists(const SnapContext& snapc, bool exists) {
+      const SnapSet *n = get_new_snapset();
+      if (snapc.seq != n->seq ||
+	  snapc.snaps != n->snaps ||
+	  exists != n->head_exists) {
+	modify_snapset();
+	new_snapset->seq = snapc.seq;
+	new_snapset->snaps = snapc.snaps;
+	new_snapset->head_exists = exists;
+      }
+    }
+
     ~OpContext() {
       assert(!op_t);
       assert(lock_to_release == NONE);
@@ -578,6 +613,7 @@ public:
 	delete i->second.second;
       }
       assert(on_finish == NULL);
+      delete new_snapset;
     }
     void finish(int r) {
       if (on_finish) {
