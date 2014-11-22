@@ -3962,7 +3962,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       }
       break;
 
-    case CEPH_OSD_OP_ROLLBACK :
+    case CEPH_OSD_OP_ROLLBACK:
       ++ctx->num_write;
       tracepoint(osd, do_osd_op_pre_rollback, soid.oid.name.c_str(), soid.snap.val);
       result = _rollback_to(ctx, op);
@@ -5407,6 +5407,12 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
 	  ctx->at_version.version++;
 
 	  ctx->snapset_obc->obs.exists = false;
+
+	  // force snapset rewrite
+	  if (!bss.length()) {
+	    new_snapset = ctx->modify_snapset();
+	    ::encode(*new_snapset, bss);
+	  }
 	}
       }
     } else if (new_snapset->clones.size() &&
@@ -5437,16 +5443,20 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
       ctx->snapset_obc->obs.oi.mtime = ctx->mtime;
       ctx->snapset_obc->obs.oi.local_mtime = now;
 
+      // force snapset rewrite
+      if (!bss.length()) {
+	new_snapset = ctx->modify_snapset();
+	::encode(*new_snapset, bss);
+      }
+
       bufferlist bv(sizeof(ctx->new_obs.oi));
       ::encode(ctx->snapset_obc->obs.oi, bv);
       ctx->op_t->touch(snapoid);
       setattr_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, OI_ATTR, bv);
-      if (ctx->is_new_snapset())
-	setattr_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, SS_ATTR, bss);
+      setattr_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, SS_ATTR, bss);
       if (pool.info.require_rollback()) {
 	map<string, boost::optional<bufferlist> > to_set;
-	if (ctx->is_new_snapset())
-	  to_set[SS_ATTR];
+	to_set[SS_ATTR];
 	to_set[OI_ATTR];
 	ctx->log.back().mod_desc.setattrs(to_set);
       } else {
