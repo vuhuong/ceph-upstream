@@ -5373,6 +5373,12 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
 	   << dendl;
   utime_t now = ceph_clock_now(cct);
 
+  if (ctx->new_obs.exists && !ctx->obs->exists) {
+    // force snapset modification so it gets written for newly created
+    // object
+    ctx->modify_snapset();
+  }
+
   // snapset
   const SnapSet* new_snapset = ctx->get_new_snapset();
   bufferlist bss;
