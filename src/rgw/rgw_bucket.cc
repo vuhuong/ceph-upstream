@@ -233,6 +233,33 @@ int rgw_bucket_instance_remove_entry(RGWRados *store, string& entry, RGWObjVersi
   return store->meta_mgr->remove_entry(bucket_instance_meta_handler, entry, objv_tracker);
 }
 
+int rgw_bucket_parse_bucket_instance(const string& bucket_instance, string *target_bucket_instance, int *shard_id)
+{
+  vector<string> v;
+  get_str_vec(bucket_instance, ":", v);
+
+  switch (v.size()) {
+    case 1:
+      *shard_id = -1;
+      *target_bucket_instance = v[0];
+      break;
+    case 2:
+      {
+        *target_bucket_instance = v[0];
+        string err;
+        *shard_id = strict_strtol(v[1].c_str(), 10, &err);
+        if (!err.empty()) {
+          return -EINVAL;
+        }
+      break;
+      }
+    default:
+      return -EINVAL;
+  }
+
+  return 0;
+}
+
 int rgw_bucket_set_attrs(RGWRados *store, RGWBucketInfo& bucket_info,
                          map<string, bufferlist>& attrs,
                          map<string, bufferlist>* rmattrs,
