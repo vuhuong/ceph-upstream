@@ -54,27 +54,6 @@ static void append_escaped(const string &in, string *out)
   }
 }
 
-static bool append_unescaped(string::const_iterator begin,
-			     string::const_iterator end, 
-			     string *out) {
-  for (string::const_iterator i = begin; i != end; ++i) {
-    if (*i == '%') {
-      ++i;
-      if (*i == 'p')
-	out->push_back('%');
-      else if (*i == 'e')
-	out->push_back('.');
-      else if (*i == 'u')
-	out->push_back('_');
-      else
-	return false;
-    } else {
-      out->push_back(*i);
-    }
-  }
-  return true;
-}
-
 bool DBObjectMap::check(std::ostream &out)
 {
   bool retval = true;
@@ -165,94 +144,31 @@ string DBObjectMap::ghobject_key(const ghobject_t &oid)
   return out;
 }
 
-string DBObjectMap::ghobject_key_v0(coll_t c, const ghobject_t &oid)
+bool DBObjectMap::is_buggy_ghobject_key_v1(const string &in)
 {
-  string out;
-  append_escaped(c.to_str(), &out);
-  out.push_back('.');
-  append_escaped(oid.hobj.oid.name, &out);
-  out.push_back('.');
-  append_escaped(oid.hobj.get_key(), &out);
-  out.push_back('.');
-
-  char snap_with_hash[1000];
-  char *t = snap_with_hash;
-  char *end = t + sizeof(snap_with_hash);
-  if (oid.hobj.snap == CEPH_NOSNAP)
-    t += snprintf(t, end - t, ".head");
-  else if (oid.hobj.snap == CEPH_SNAPDIR)
-    t += snprintf(t, end - t, ".snapdir");
-  else
-    t += snprintf(t, end - t, ".%llx", (long long unsigned)oid.hobj.snap);
-  t += snprintf(t, end - t, ".%.*X", (int)(sizeof(oid.hobj.hash)*2), oid.hobj.hash);
-  out += string(snap_with_hash);
-  return out;
+  int dots = 5;  // skip 5 .'s
+  const char *s = in.c_str();
+  do {
+    while (*s && *s != '.')
+      ++s;
+    ++s;
+  } while (--dots);
+  // we are now either at a hash value (32 bits, 8 chars) or a generation
+  // value (64 bits, 16 chars).  count!
+  int len = 0;
+  while (*s && *s != '.') {
+    ++s;
+    ++len;
+  }
+  if (len == 8) {
+    assert(*s == 0);
+    return true;
+  }
+  assert(len == 16);
+  assert(*s == '.'); // the shard follows.
+  return false;
 }
 
-bool DBObjectMap::parse_ghobject_key_v0(const string &in, coll_t *c,
-				       ghobject_t *oid)
-{
-  string coll;
-  string name;
-  string key;
-  snapid_t snap;
-  uint32_t hash;
-
-  string::const_iterator current = in.begin();
-  string::const_iterator end;
-  for (end = current; end != in.end() && *end != '.'; ++end) ;
-  if (end == in.end())
-    return false;
-  if (!append_unescaped(current, end, &coll))
-    return false;
-
-  current = ++end;
-  for (; end != in.end() && *end != '.'; ++end) ;
-  if (end == in.end())
-    return false;
-  if (!append_unescaped(current, end, &name))
-    return false;
-
-  current = ++end;
-  for (; end != in.end() && *end != '.'; ++end) ;
-  if (end == in.end())
-    return false;
-  if (!append_unescaped(current, end, &key))
-    return false;
-
-  current = ++end;
-  // Bug in old encoding, double .
-  if (*current != '.')
-    return false;
-
-  current = ++end;
-  for (; end != in.end() && *end != '.'; ++end) ;
-  if (end == in.end())
-    return false;
-  string snap_str(current, end);
-  
-  current = ++end;
-  for (; end != in.end() && *end != '.'; ++end) ;
-  if (end != in.end())
-    return false;
-  string hash_str(current, end);
-
-  if (snap_str == "head")
-    snap = CEPH_NOSNAP;
-  else if (snap_str == "snapdir")
-    snap = CEPH_SNAPDIR;
-  else
-    snap = strtoull(snap_str.c_str(), NULL, 16);
-  sscanf(hash_str.c_str(), "%X", &hash);
-
-  *c = coll_t(coll);
-  int64_t pool = -1;
-  spg_t pg;
-  if (c->is_pg_prefix(pg))
-    pool = (int64_t)pg.pgid.pool();
-  (*oid) = ghobject_t(hobject_t(name, key, snap, hash, pool, ""));
-  return true;
-}
 
 string DBObjectMap::map_header_key(const ghobject_t &oid)
 {
@@ -1003,76 +919,49 @@ int DBObjectMap::clone(const ghobject_t &oid,
   return db->submit_transaction(t);
 }
 
-int DBObjectMap::upgrade()
+int DBObjectMap::upgrade_to_v2()
 {
+  dout(1) << __func__ << " start" << dendl;
   while (1) {
     unsigned count = 0;
-    KeyValueDB::Iterator iter = db->get_iterator(LEAF_PREFIX);
+    KeyValueDB::Iterator iter = db->get_iterator(HOBJECT_TO_SEQ);
     iter->seek_to_first();
     if (!iter->valid())
       break;
     KeyValueDB::Transaction t = db->get_transaction();
-    set<string> legacy_to_remove;
-    set<uint64_t> moved_seqs;
-    map<string, bufferlist> new_map_headers;
+    set<string> remove;
+    map<string, bufferlist> add;
     for (;
-	 iter->valid() && count < 300;
-	 iter->next(), ++count) {
-      bufferlist bl = iter->value();
+        iter->valid() && count < 300;
+        iter->next()) {
+      if (!is_buggy_ghobject_key_v1(iter->key()))
+	continue;
+
+      // decode header to get oid
       _Header hdr;
+      bufferlist bl = iter->value();
       bufferlist::iterator bliter = bl.begin();
       hdr.decode(bliter);
 
-      legacy_to_remove.insert(iter->key());
-      if (moved_seqs.count(hdr.parent))
-	continue; // Moved already in this transaction
-      moved_seqs.insert(hdr.parent);
-
-      set<string> to_get;
-      to_get.insert(HEADER_KEY);
-      map<string, bufferlist> got;
-      int r = db->get(USER_PREFIX + header_key(hdr.parent) + SYS_PREFIX,
-		      to_get,
-		      &got);
-      if (r < 0)
-	return r;
-      if (got.empty())
-	continue; // Moved in a previous transaction
-
-      t->rmkeys(USER_PREFIX + header_key(hdr.parent) + SYS_PREFIX,
-		 to_get);
-
-      coll_t coll;
-      ghobject_t oid;
-      assert(parse_ghobject_key_v0(iter->key(), &coll, &oid));
-      new_map_headers[ghobject_key(oid)] = got.begin()->second;
+      string newkey(ghobject_key(hdr.oid));
+      dout(20) << __func__ << " " << iter->key() << " -> " << newkey << dendl;
+      add[newkey] = iter->value();
+      remove.insert(iter->key());
+      ++count;
     }
 
-    t->rmkeys(LEAF_PREFIX, legacy_to_remove);
-    t->set(HOBJECT_TO_SEQ, new_map_headers);
+    t->rmkeys(HOBJECT_TO_SEQ, remove);
+    t->set(HOBJECT_TO_SEQ, add);
     int r = db->submit_transaction(t);
     if (r < 0)
       return r;
   }
 
-  
-  while (1) {
-    KeyValueDB::Transaction t = db->get_transaction();
-    KeyValueDB::Iterator iter = db->get_iterator(REVERSE_LEAF_PREFIX);
-    iter->seek_to_first();
-    if (!iter->valid())
-      break;
-    set<string> to_remove;
-    unsigned count = 0;
-    for (; iter->valid() && count < 1000; iter->next(), ++count)
-      to_remove.insert(iter->key());
-    t->rmkeys(REVERSE_LEAF_PREFIX, to_remove);
-    db->submit_transaction(t);
-  }
-  state.v = 1;
+  state.v = 2;
   KeyValueDB::Transaction t = db->get_transaction();
   write_state(t);
   db->submit_transaction_sync(t);
+  dout(1) << __func__ << " done" << dendl;
   return 0;
 }
 
@@ -1087,21 +976,26 @@ int DBObjectMap::init(bool do_upgrade)
   if (!result.empty()) {
     bufferlist::iterator bliter = result.begin()->second.begin();
     state.decode(bliter);
-    if (state.v < 1) { // Needs upgrade
+    if (state.v < 1) {
+      dout(1) << "DBObjectMap is *very* old; upgrade to an older version first"
+	      << dendl;
+      return -ENOTSUP;
+    }
+    if (state.v < 2) { // Needs upgrade
       if (!do_upgrade) {
 	dout(1) << "DOBjbectMap requires an upgrade,"
 		<< " set filestore_update_to"
 		<< dendl;
 	return -ENOTSUP;
       } else {
-	r = upgrade();
+	r = upgrade_to_v2();
 	if (r < 0)
 	  return r;
       }
     }
   } else {
     // New store
-    state.v = 1;
+    state.v = 2;
     state.seq = 1;
   }
   dout(20) << "(init)dbobjectmap: seq is " << state.seq << dendl;
