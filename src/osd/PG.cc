@@ -1420,10 +1420,11 @@ void PG::build_might_have_unfound()
 struct C_PG_ActivateCommitted : public Context {
   PGRef pg;
   epoch_t epoch;
-  C_PG_ActivateCommitted(PG *p, epoch_t e)
-    : pg(p), epoch(e) {}
+  epoch_t activation_epoch;
+  C_PG_ActivateCommitted(PG *p, epoch_t e, epoch_t ae)
+    : pg(p), epoch(e), activation_epoch(ae) {}
   void finish(int r) {
-    pg->_activate_committed(epoch);
+    pg->_activate_committed(epoch, activation_epoch);
   }
 };
 
@@ -1489,7 +1490,11 @@ void PG::activate(ObjectStore::Transaction& t,
   dirty_big_info = true; // maybe
 
   // find out when we commit
-  t.register_on_complete(new C_PG_ActivateCommitted(this, activation_epoch));
+  t.register_on_complete(
+    new C_PG_ActivateCommitted(
+      this,
+      get_osdmap()->get_epoch(),
+      activation_epoch));
   
   // initialize snap_trimq
   if (is_primary()) {
@@ -1801,22 +1806,24 @@ void PG::replay_queued_ops()
   publish_stats_to_osd();
 }
 
-void PG::_activate_committed(epoch_t e)
+void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
 {
   lock();
-  if (pg_has_reset_since(e)) {
-    dout(10) << "_activate_committed " << e << ", that was an old interval" << dendl;
+  if (pg_has_reset_since(epoch)) {
+    dout(10) << "_activate_committed " << epoch
+	     << ", that was an old interval" << dendl;
   } else if (is_primary()) {
     peer_activated.insert(pg_whoami);
-    dout(10) << "_activate_committed " << e << " peer_activated now " << peer_activated 
+    dout(10) << "_activate_committed " << epoch
+	     << " peer_activated now " << peer_activated 
 	     << " last_epoch_started " << info.history.last_epoch_started
 	     << " same_interval_since " << info.history.same_interval_since << dendl;
     assert(!actingbackfill.empty());
     if (peer_activated.size() == actingbackfill.size())
       all_activated_and_committed();
   } else {
-    dout(10) << "_activate_committed " << e << " telling primary" << dendl;
-    MOSDPGInfo *m = new MOSDPGInfo(e);
+    dout(10) << "_activate_committed " << epoch << " telling primary" << dendl;
+    MOSDPGInfo *m = new MOSDPGInfo(epoch);
     pg_notify_t i = pg_notify_t(
       get_primary().shard, pg_whoami.shard,
       get_osdmap()->get_epoch(),
@@ -1824,7 +1831,7 @@ void PG::_activate_committed(epoch_t e)
       info);
 
     if (acting.size() >= pool.info.min_size) {
-      i.info.history.last_epoch_started = e;
+      i.info.history.last_epoch_started = activation_epoch;
       state_set(PG_STATE_ACTIVE);
     } else {
       state_set(PG_STATE_PEERED);
