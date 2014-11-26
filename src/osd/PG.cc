@@ -6402,10 +6402,6 @@ boost::statechart::result PG::RecoveryState::Active::react(const MInfoRec& infoe
   // may be telling us they have activated (and committed) but we can't
   // share that until _everyone_ does the same.
   if (pg->is_actingbackfill(infoevt.from)) {
-    assert(pg->info.history.last_epoch_started < 
-	   pg->info.history.same_interval_since);
-    assert(infoevt.info.history.last_epoch_started >= 
-	   pg->info.history.same_interval_since);
     dout(10) << " peer osd." << infoevt.from << " activated and committed" 
 	     << dendl;
     pg->peer_activated.insert(infoevt.from);
