@@ -2768,6 +2768,8 @@ void PG::append_log(
        p != logv.end();
        ++p) {
     p->offset = 0;
+    if (!transaction_applied && p->is_delete())
+      t.remove(coll, p->soid);
     add_log_entry(*p, keys[p->get_key_name()]);
   }
 
