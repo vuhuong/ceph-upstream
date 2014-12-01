@@ -802,7 +802,6 @@ void ECBackend::handle_sub_write(
 {
   if (msg)
     msg->mark_started();
-  assert(!get_parent()->get_log().get_missing().is_missing(op.soid));
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction *localt = new ObjectStore::Transaction;
@@ -1147,10 +1146,10 @@ void ECBackend::on_change()
   }
   in_progress_client_reads.clear();
   shard_to_read_map.clear();
-  clear_state();
+  clear_recovery_state();
 }
 
-void ECBackend::clear_state()
+void ECBackend::clear_recovery_state()
 {
   recovery_ops.clear();
 }
