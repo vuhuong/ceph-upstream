@@ -670,6 +670,29 @@ void CDir::remove_null_dentries() {
   assert(get_num_any() == items.size());
 }
 
+// remove dirty null dentries for deleted directory. the dirfrag will be
+// deleted soon, so it's safe to not commit dirty dentries.
+void CDir::try_remove_dentries_for_stray()
+{
+  dout(10) << __func__ << dendl;
+  assert(inode->inode.nlink == 0);
+
+  CDir::map_t::iterator p = items.begin();
+  while (p != items.end()) {
+    CDentry *dn = p->second;
+    ++p;
+    if (!dn->get_linkage()->is_null() || dn->is_projected())
+      continue; // shouldn't happen
+    if (dn->is_dirty())
+      dn->mark_clean();
+    if (dn->get_num_ref() == 0)
+      remove_dentry(dn);
+  }
+
+  if (is_dirty() && items.empty())
+    mark_clean();
+}
+
 void CDir::touch_dentries_bottom() {
   dout(12) << "touch_dentries_bottom " << *this << dendl;
 
@@ -1351,6 +1374,15 @@ void CDir::fetch(MDSInternalContextBase *c, const string& want_dn, bool ignore_a
     return;
   }
 
+  // unlinked directory inode shouldn't have any entry
+  if (inode->inode.nlink == 0) {
+    dout(7) << "fetch dirfrag for unlinked directory, mark complete" << dendl;
+    mark_complete();
+    if (c)
+      cache->mds->queue_waiter(c);
+    return;
+  }
+
   if (c) add_waiter(WAIT_COMPLETE, c);
   
   // already fetching?
@@ -1520,6 +1552,18 @@ void CDir::_omap_fetched(bufferlist& hdrbl, map<string, bufferlist>& omap,
       state_clear(STATE_REJOINUNDEF);
       cache->opened_undef_dirfrag(this);
     }
+  }
+
+  // we don't commit dirty dentries to dirfrag objects for unlinked directory
+  // inode, unlinked directory inode shouldn't have any entry, so ignore the
+  // fetched data.
+  if (inode->inode.nlink == 0) {
+    dout(10) << "_fetched dirfrag for unlinked directory, ignore data" << dendl;
+    mark_complete();
+    state_clear(STATE_FETCHING);
+    auth_unpin(this);
+    finish_waiting(WAIT_COMPLETE, 0);
+    return;
   }
 
   list<CInode*> undef_inodes;

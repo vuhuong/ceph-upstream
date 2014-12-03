@@ -8869,10 +8869,6 @@ void MDCache::eval_stray(CDentry *dn, bool delay)
       dout(20) << " caps | leases" << dendl;
       return;  // wait
     }
-    if (!in->dirfrags.empty()) {
-      dout(20) << " open dirfrags" << dendl;
-      return;  // wait for dirs to close/trim
-    }
     if (dn->state_test(CDentry::STATE_PURGING)) {
       dout(20) << " already purging" << dendl;
       return;  // already purging
@@ -8889,6 +8885,18 @@ void MDCache::eval_stray(CDentry *dn, bool delay)
     if (dn->get_num_ref() > (int)dn->is_dirty() + !!in->get_num_ref()) {
       dout(20) << " too many dn refs" << dendl;
       return;
+    }
+    // close dirfrags
+    if (in->has_dirfrags()) {
+      list<CDir*> ls;
+      in->get_dirfrags(ls);
+      for (list<CDir*>::iterator p = ls.begin(); p != ls.end(); ++p) {
+	CDir *dir = *p;
+	// above ref check should fail if dir is referenced or is subtree root
+	assert(dir->is_auth());
+	assert(dir->get_num_ref() == 0);
+	in->close_dirfrag(dir->get_frag());
+      }
     }
     if (delay) {
       if (!dn->item_stray.is_on_list())
@@ -8914,6 +8922,16 @@ void MDCache::eval_stray(CDentry *dn, bool delay)
     }
   } else {
     // wait for next use.
+  }
+}
+
+void MDCache::try_remove_dentries_for_stray(CInode* diri) {
+  assert(diri->inode.nlink == 0);
+  if (diri->has_dirfrags()) {
+    list<CDir*> ls;
+    diri->get_nested_dirfrags(ls);
+    for (list<CDir*>::iterator p = ls.begin(); p != ls.end(); ++p)
+      (*p)->try_remove_dentries_for_stray();
   }
 }
 
