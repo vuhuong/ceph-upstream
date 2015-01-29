@@ -252,6 +252,7 @@ class XMLArgs
   string& get(const char *name, bool *exists = NULL);
   int get_bool(const string& name, bool *val, bool *exists);
   int get_bool(const char *name, bool *val, bool *exists);
+  void get_bool(const char *name, bool *val, bool def_val);
 
   /** see if a parameter is contained in this XMLArgs */
   bool exists(const char *name) {
@@ -895,6 +896,7 @@ struct req_info {
   string request_uri;
   string effective_uri;
   string request_params;
+  string domain;
 
   req_info(CephContext *cct, RGWEnv *_env);
   void rebuild_from(req_info& src);

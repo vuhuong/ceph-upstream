@@ -2062,7 +2062,6 @@ void OSD::create_logger()
 
   PerfCountersBuilder osd_plb(cct, "osd", l_osd_first, l_osd_last);
 
-  osd_plb.add_u64(l_osd_opq, "opq");       // op queue length (waiting to be processed yet)
   osd_plb.add_u64(l_osd_op_wip, "op_wip");   // rep ops currently being processed (primary)
 
   osd_plb.add_u64_counter(l_osd_op,       "op");           // client ops
@@ -2145,6 +2144,9 @@ void OSD::create_logger()
   osd_plb.add_u64_counter(l_osd_agent_skip, "agent_skip");
   osd_plb.add_u64_counter(l_osd_agent_flush, "agent_flush");
   osd_plb.add_u64_counter(l_osd_agent_evict, "agent_evict");
+
+  osd_plb.add_u64_counter(l_osd_object_ctx_cache_hit, "object_ctx_cache_hit");
+  osd_plb.add_u64_counter(l_osd_object_ctx_cache_total, "object_ctx_cache_total");
 
   logger = osd_plb.create_perf_counters();
   cct->get_perfcounters_collection()->add(logger);
@@ -2776,12 +2778,6 @@ void OSD::load_pgs()
       continue;
     }
 
-    if (!osdmap->have_pg_pool(pgid.pool())) {
-      dout(10) << __func__ << ": skipping PG " << pgid << " because we don't have pool "
-	       << pgid.pool() << dendl;
-      continue;
-    }
-
     if (pgid.preferred() >= 0) {
       dout(10) << __func__ << ": skipping localized PG " << pgid << dendl;
       // FIXME: delete it too, eventually
@@ -2893,7 +2889,7 @@ void OSD::build_past_intervals_parallel()
 {
   map<PG*,pistate> pis;
 
-  // calculate untion of map range
+  // calculate junction of map range
   epoch_t end_epoch = superblock.oldest_map;
   epoch_t cur_epoch = superblock.newest_map;
   {
@@ -2904,7 +2900,7 @@ void OSD::build_past_intervals_parallel()
       PG *pg = i->second;
 
       epoch_t start, end;
-      if (!pg->_calc_past_interval_range(&start, &end))
+      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map))
         continue;
 
       dout(10) << pg->info.pgid << " needs " << start << "-" << end << dendl;
@@ -2943,8 +2939,11 @@ void OSD::build_past_intervals_parallel()
       vector<int> acting, up;
       int up_primary;
       int primary;
+      pg_t pgid = pg->info.pgid.pgid;
+      if (p.same_interval_since && last_map->get_pools().count(pgid.pool()))
+	pgid = pgid.get_ancestor(last_map->get_pg_num(pgid.pool()));
       cur_map->pg_to_up_acting_osds(
-	pg->info.pgid.pgid, &up, &up_primary, &acting, &primary);
+	pgid, &up, &up_primary, &acting, &primary);
 
       if (p.same_interval_since == 0) {
 	dout(10) << __func__ << " epoch " << cur_epoch << " pg " << pg->info.pgid
@@ -2970,7 +2969,7 @@ void OSD::build_past_intervals_parallel()
 	p.same_interval_since,
 	pg->info.history.last_epoch_clean,
 	cur_map, last_map,
-	pg->info.pgid.pgid,
+	pgid,
 	&pg->past_intervals,
 	&debug);
       if (new_interval) {
@@ -4167,6 +4166,10 @@ void OSD::RemoveWQ::_process(
   for (list<coll_t>::iterator i = colls_to_remove.begin();
        i != colls_to_remove.end();
        ++i) {
+    if (g_conf->osd_inject_failure_on_pg_removal) {
+      generic_derr << "osd_inject_failure_on_pg_removal" << dendl;
+      exit(1);
+    }
     t->remove_collection(*i);
   }
 

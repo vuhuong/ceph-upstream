@@ -422,6 +422,7 @@ void ReplicatedPG::wait_for_unreadable_object(
 void ReplicatedPG::wait_for_all_missing(OpRequestRef op)
 {
   waiting_for_all_missing.push_back(op);
+  op->mark_delayed("waiting for all missing");
 }
 
 bool ReplicatedPG::is_degraded_object(const hobject_t& soid)
@@ -1232,6 +1233,7 @@ ReplicatedPG::ReplicatedPG(OSDService *o, OSDMapRef curmap,
   pgbackend(
     PGBackend::build_pg_backend(
       _pool.info, curmap, this, coll_t(p), coll_t::make_temp_coll(p), o->store, cct)),
+  object_contexts(o->cct, g_conf->osd_pg_object_context_cache_count),
   snapset_contexts_lock("ReplicatedPG::snapset_contexts"),
   new_backfill(false),
   temp_seq(0),
@@ -1267,6 +1269,7 @@ void ReplicatedPG::do_request(
 	     << " flushes_in_progress pending "
 	     << "waiting for active on " << op << dendl;
     waiting_for_active.push_back(op);
+    op->mark_delayed("waiting for flushes");
     return;
   }
 
@@ -1278,6 +1281,7 @@ void ReplicatedPG::do_request(
       return;
     } else {
       waiting_for_active.push_back(op);
+      op->mark_delayed("waiting for active");
       return;
     }
   }
@@ -1291,6 +1295,7 @@ void ReplicatedPG::do_request(
     if (is_replay()) {
       dout(20) << " replay, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);
+      op->mark_delayed("waiting for replay end");
       return;
     }
     // verify client features
@@ -2067,13 +2072,17 @@ void ReplicatedPG::cancel_proxy_read_ops(bool requeue)
   }
 
   if (requeue) {
-    for (map<hobject_t, list<OpRequestRef> >::iterator p = in_progress_proxy_reads.begin();
-	p != in_progress_proxy_reads.end(); p++) {
+    map<hobject_t, list<OpRequestRef> >::iterator p =
+      in_progress_proxy_reads.begin();
+    while (p != in_progress_proxy_reads.end()) {
       list<OpRequestRef>& ls = p->second;
-      dout(10) << __func__ << " " << p->first << " requeuing " << ls.size() << " requests" << dendl;
+      dout(10) << __func__ << " " << p->first << " requeuing " << ls.size()
+	       << " requests" << dendl;
       requeue_ops(ls);
-      in_progress_proxy_reads.erase(p);
+      in_progress_proxy_reads.erase(p++);
     }
+  } else {
+    in_progress_proxy_reads.clear();
   }
 }
 
@@ -7185,14 +7194,14 @@ void ReplicatedPG::cancel_flush(FlushOpRef fop, bool requeue)
     osd->objecter->op_cancel(fop->objecter_tid, -ECANCELED);
     fop->objecter_tid = 0;
   }
+  if (fop->blocking) {
+    fop->obc->stop_block();
+    kick_object_context_blocked(fop->obc);
+  }
   if (requeue) {
     if (fop->op)
       requeue_op(fop->op);
     requeue_ops(fop->dup_ops);
-  }
-  if (fop->blocking) {
-    fop->obc->stop_block();
-    kick_object_context_blocked(fop->obc);
   }
   if (fop->on_flush) {
     Context *on_flush = fop->on_flush;
@@ -7899,10 +7908,13 @@ ObjectContextRef ReplicatedPG::get_object_context(const hobject_t& soid,
       pg_log.get_log().objects.find(soid)->second->op ==
       pg_log_entry_t::LOST_REVERT));
   ObjectContextRef obc = object_contexts.lookup(soid);
+  osd->logger->inc(l_osd_object_ctx_cache_total);
   if (obc) {
+    osd->logger->inc(l_osd_object_ctx_cache_hit);
     dout(10) << __func__ << ": found obc in cache: " << obc
 	     << dendl;
   } else {
+    dout(10) << __func__ << ": obc NOT found in cache: " << soid << dendl;
     // check disk
     bufferlist bv;
     if (attrs) {
@@ -8420,8 +8432,6 @@ void ReplicatedBackend::sub_op_modify_impl(OpRequestRef op)
   ::decode(log, p);
   rm->opt.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
 
-  rm->opt.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
-
   bool update_snaps = false;
   if (!rm->opt.empty()) {
     // If the opt is non-empty, we infer we are before
@@ -8443,14 +8453,14 @@ void ReplicatedBackend::sub_op_modify_impl(OpRequestRef op)
   
   op->mark_started();
 
-  rm->opt.append(rm->localt);
-  rm->opt.register_on_commit(
+  rm->localt.append(rm->opt);
+  rm->localt.register_on_commit(
     parent->bless_context(
       new C_OSD_RepModifyCommit(this, rm)));
-  rm->opt.register_on_applied(
+  rm->localt.register_on_applied(
     parent->bless_context(
       new C_OSD_RepModifyApply(this, rm)));
-  parent->queue_transaction(&(rm->opt), op);
+  parent->queue_transaction(&(rm->localt), op);
   // op is cleaned up by oncommit/onapply when both are executed
 }
 
@@ -9433,8 +9443,19 @@ int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
       dout(10) << " extent " << p.get_start() << "~" << p.get_len()
 	       << " is actually " << p.get_start() << "~" << bit.length()
 	       << dendl;
-      p.set_len(bit.length());
+      interval_set<uint64_t>::iterator save = p++;
+      if (bit.length() == 0)
+        out_op->data_included.erase(save);     //Remove this empty interval
+      else
+        save.set_len(bit.length());
+      // Remove any other intervals present
+      while (p != out_op->data_included.end()) {
+        interval_set<uint64_t>::iterator save = p++;
+        out_op->data_included.erase(save);
+      }
       new_progress.data_complete = true;
+      out_op->data.claim_append(bit);
+      break;
     }
     out_op->data.claim_append(bit);
   }
@@ -10268,7 +10289,6 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
 
   // requeue everything in the reverse order they should be
   // reexamined.
-
   clear_scrub_reserved();
   scrub_clear_state();
 
@@ -10330,6 +10350,11 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
 
   debug_op_order.clear();
   unstable_stats.clear();
+
+  // we don't want to cache object_contexts through the interval change
+  // NOTE: we actually assert that all currently live references are dead
+  // by the time the flush for the next interval completes.
+  object_contexts.clear();
 }
 
 void ReplicatedPG::on_role_change()
@@ -11778,9 +11803,12 @@ void ReplicatedPG::hit_set_persist()
   obc->obs.oi.mtime = now;
   obc->obs.oi.size = bl.length();
   obc->obs.exists = true;
+  obc->obs.oi.set_data_digest(bl.crc32c(-1));
 
   ctx->new_obs = obc->obs;
-  ctx->new_snapset.head_exists = true;
+
+  obc->ssc->snapset.head_exists = true;
+  ctx->new_snapset = obc->ssc->snapset;
 
   ctx->delta_stats.num_objects++;
   ctx->delta_stats.num_objects_hit_set_archive++;
@@ -12803,6 +12831,8 @@ void ReplicatedPG::_scrub(ScrubMap& scrubmap)
 	   scrubber.missing_digest.begin();
 	 p != scrubber.missing_digest.end();
 	 ++p) {
+      if (p->first.is_snapdir())
+	continue;
       dout(10) << __func__ << " recording digests for " << p->first << dendl;
       ObjectContextRef obc = get_object_context(p->first, false);
       assert(obc);

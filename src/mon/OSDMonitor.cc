@@ -3691,12 +3691,13 @@ bool OSDMonitor::validate_crush_against_features(const CrushWrapper *newcrush,
   OSDMap newmap;
   newmap.deepish_copy_from(osdmap);
   newmap.apply_incremental(new_pending);
-  uint64_t features = newmap.get_features(CEPH_ENTITY_TYPE_MON, NULL);
+
+  uint64_t features =
+    newmap.get_features(CEPH_ENTITY_TYPE_MON, NULL) |
+    newmap.get_features(CEPH_ENTITY_TYPE_OSD, NULL);
 
   stringstream features_ss;
-
   int r = check_cluster_features(features, features_ss);
-
   if (!r)
     return true;
 
@@ -3929,6 +3930,8 @@ int OSDMonitor::prepare_new_pool(string& name, uint64_t auid,
                                  const uint64_t expected_num_objects,
 				 stringstream &ss)
 {
+  if (name.length() == 0)
+    return -EINVAL;
   int r;
   r = prepare_pool_crush_ruleset(pool_type, erasure_code_profile,
 				 crush_ruleset_name, &crush_ruleset, ss);
