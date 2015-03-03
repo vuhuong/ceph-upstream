@@ -54,6 +54,7 @@ enum {
 };
 
 class Context;
+class SimpleThrottle;
 
 namespace librbd {
 
@@ -102,6 +103,7 @@ namespace librbd {
   int get_overlap(ImageCtx *ictx, uint64_t *overlap);
   int get_parent_info(ImageCtx *ictx, std::string *parent_pool_name,
 		      std::string *parent_name, std::string *parent_snap_name);
+  int get_flags(ImageCtx *ictx, uint64_t *flags);
   int is_exclusive_lock_owner(ImageCtx *ictx, bool *is_owner);
 
   int remove(librados::IoCtx& io_ctx, const char *imgname,
@@ -117,7 +119,7 @@ namespace librbd {
   int snap_unprotect(ImageCtx *ictx, const char *snap_name);
   int snap_is_protected(ImageCtx *ictx, const char *snap_name,
 			bool *is_protected);
-  int add_snap(ImageCtx *ictx, const char *snap_name);
+  int add_snap(ImageCtx *ictx, const char *snap_name, bool lock_owner);
   int rm_snap(ImageCtx *ictx, const char *snap_name);
   int refresh_parent(ImageCtx *ictx);
   int ictx_check(ImageCtx *ictx);
@@ -161,6 +163,8 @@ namespace librbd {
 		   ceph::bufferlist& header);
   int tmap_set(librados::IoCtx& io_ctx, const std::string& imgname);
   int tmap_rm(librados::IoCtx& io_ctx, const std::string& imgname);
+  void rollback_object(ImageCtx *ictx, uint64_t snap_id, const string& oid,
+                       SimpleThrottle& throttle);
   int rollback_image(ImageCtx *ictx, uint64_t snap_id,
 		     ProgressContext& prog_ctx);
   void image_info(const ImageCtx *ictx, image_info_t& info, size_t info_size);
@@ -189,10 +193,8 @@ namespace librbd {
   int async_flatten(ImageCtx *ictx, Context *ctx, ProgressContext &prog_ctx);
   int async_resize(ImageCtx *ictx, Context *ctx, uint64_t size,
 		   ProgressContext &prog_ctx);
-  int async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t original_size,
-			  uint64_t new_size, ProgressContext& prog_ctx);
-  int async_trim_image(ImageCtx *ictx, Context *ctx, uint64_t original_size,
-		       uint64_t new_size, ProgressContext& prog_ctx);
+  void async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t original_size,
+			   uint64_t new_size, ProgressContext& prog_ctx);
 
   int aio_write(ImageCtx *ictx, uint64_t off, size_t len, const char *buf,
 		AioCompletion *c, int op_flags);

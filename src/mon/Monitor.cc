@@ -97,12 +97,18 @@ const string Monitor::MONITOR_STORE_PREFIX = "monitor_store";
 
 
 #undef COMMAND
+#undef COMMAND_WITH_FLAG
 MonCommand mon_commands[] = {
-#define COMMAND(parsesig, helptext, modulename, req_perms, avail) \
-  {parsesig, helptext, modulename, req_perms, avail},
+#define COMMAND(parsesig, helptext, modulename, req_perms, avail)	\
+  {parsesig, helptext, modulename, req_perms, avail, 0},
+#define COMMAND_WITH_FLAG(parsesig, helptext, modulename, req_perms, avail, flag) \
+  {parsesig, helptext, modulename, req_perms, avail, MonCommand::FLAG_##flag},
 #include <mon/MonCommands.h>
 };
+#undef COMMAND
 MonCommand classic_mon_commands[] = {
+#define COMMAND(parsesig, helptext, modulename, req_perms, avail)	\
+  {parsesig, helptext, modulename, req_perms, avail},
 #include <mon/DumplingMonCommands.h>
 };
 
@@ -145,11 +151,11 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
   log_client(cct_, messenger, monmap, LogClient::FLAG_MON),
   key_server(cct, &keyring),
   auth_cluster_required(cct,
-			cct->_conf->auth_supported.length() ?
-			cct->_conf->auth_supported : cct->_conf->auth_cluster_required),
+			cct->_conf->auth_supported.empty() ?
+			cct->_conf->auth_cluster_required : cct->_conf->auth_supported),
   auth_service_required(cct,
-			cct->_conf->auth_supported.length() ?
-			cct->_conf->auth_supported : cct->_conf->auth_service_required),
+			cct->_conf->auth_supported.empty() ?
+			cct->_conf->auth_service_required : cct->_conf->auth_supported ),
   leader_supported_mon_commands(NULL),
   leader_supported_mon_commands_size(0),
   store(s),
@@ -530,14 +536,14 @@ int Monitor::preinit()
   assert(!logger);
   {
     PerfCountersBuilder pcb(g_ceph_context, "mon", l_mon_first, l_mon_last);
-    pcb.add_u64(l_mon_num_sessions, "num_sessions");
-    pcb.add_u64_counter(l_mon_session_add, "session_add");
-    pcb.add_u64_counter(l_mon_session_rm, "session_rm");
-    pcb.add_u64_counter(l_mon_session_trim, "session_trim");
-    pcb.add_u64_counter(l_mon_num_elections, "num_elections");
-    pcb.add_u64_counter(l_mon_election_call, "election_call");
-    pcb.add_u64_counter(l_mon_election_win, "election_win");
-    pcb.add_u64_counter(l_mon_election_lose, "election_lose");
+    pcb.add_u64(l_mon_num_sessions, "num_sessions", "Current number of opened monitor sessions");
+    pcb.add_u64_counter(l_mon_session_add, "session_add", "Number of created monitor sessions");
+    pcb.add_u64_counter(l_mon_session_rm, "session_rm", "Number of remove_session calls in monitor");
+    pcb.add_u64_counter(l_mon_session_trim, "session_trim", "Number of trimed monitor sessions");
+    pcb.add_u64_counter(l_mon_num_elections, "num_elections", "Number of elections monitor took part in");
+    pcb.add_u64_counter(l_mon_election_call, "election_call", "Number of elections started by monitor");
+    pcb.add_u64_counter(l_mon_election_win, "election_win", "Number of elections won by monitor");
+    pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Number of elections lost by monitor");
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
   }
@@ -545,29 +551,29 @@ int Monitor::preinit()
   assert(!cluster_logger);
   {
     PerfCountersBuilder pcb(g_ceph_context, "cluster", l_cluster_first, l_cluster_last);
-    pcb.add_u64(l_cluster_num_mon, "num_mon");
-    pcb.add_u64(l_cluster_num_mon_quorum, "num_mon_quorum");
-    pcb.add_u64(l_cluster_num_osd, "num_osd");
-    pcb.add_u64(l_cluster_num_osd_up, "num_osd_up");
-    pcb.add_u64(l_cluster_num_osd_in, "num_osd_in");
-    pcb.add_u64(l_cluster_osd_epoch, "osd_epoch");
-    pcb.add_u64(l_cluster_osd_bytes, "osd_bytes");
-    pcb.add_u64(l_cluster_osd_bytes_used, "osd_bytes_used");
-    pcb.add_u64(l_cluster_osd_bytes_avail, "osd_bytes_avail");
-    pcb.add_u64(l_cluster_num_pool, "num_pool");
-    pcb.add_u64(l_cluster_num_pg, "num_pg");
-    pcb.add_u64(l_cluster_num_pg_active_clean, "num_pg_active_clean");
-    pcb.add_u64(l_cluster_num_pg_active, "num_pg_active");
-    pcb.add_u64(l_cluster_num_pg_peering, "num_pg_peering");
-    pcb.add_u64(l_cluster_num_object, "num_object");
-    pcb.add_u64(l_cluster_num_object_degraded, "num_object_degraded");
-    pcb.add_u64(l_cluster_num_object_misplaced, "num_object_misplaced");
-    pcb.add_u64(l_cluster_num_object_unfound, "num_object_unfound");
-    pcb.add_u64(l_cluster_num_bytes, "num_bytes");
-    pcb.add_u64(l_cluster_num_mds_up, "num_mds_up");
-    pcb.add_u64(l_cluster_num_mds_in, "num_mds_in");
-    pcb.add_u64(l_cluster_num_mds_failed, "num_mds_failed");
-    pcb.add_u64(l_cluster_mds_epoch, "mds_epoch");
+    pcb.add_u64(l_cluster_num_mon, "num_mon", "Number of monitors, registered on cluster");
+    pcb.add_u64(l_cluster_num_mon_quorum, "num_mon_quorum", "Number of monitors in quorum");
+    pcb.add_u64(l_cluster_num_osd, "num_osd", "Total number of OSD");
+    pcb.add_u64(l_cluster_num_osd_up, "num_osd_up", "Number of OSDs that are up");
+    pcb.add_u64(l_cluster_num_osd_in, "num_osd_in", "Number of OSD in state \"in\" (they are in cluster)");
+    pcb.add_u64(l_cluster_osd_epoch, "osd_epoch", "Current epoch of OSD map");
+    pcb.add_u64(l_cluster_osd_bytes, "osd_bytes", "Total capacity of cluster in bytes");
+    pcb.add_u64(l_cluster_osd_bytes_used, "osd_bytes_used", "Number of used bytes on cluster");
+    pcb.add_u64(l_cluster_osd_bytes_avail, "osd_bytes_avail", "Number of available bytes on cluster");
+    pcb.add_u64(l_cluster_num_pool, "num_pool", "Number of pools");
+    pcb.add_u64(l_cluster_num_pg, "num_pg", "Total number of placement groups");
+    pcb.add_u64(l_cluster_num_pg_active_clean, "num_pg_active_clean", "Number of placement groups in active+clean state");
+    pcb.add_u64(l_cluster_num_pg_active, "num_pg_active", "Number of placement groups in active state");
+    pcb.add_u64(l_cluster_num_pg_peering, "num_pg_peering", "Number of placement groups in peering state");
+    pcb.add_u64(l_cluster_num_object, "num_object", "Total number of objects on cluster");
+    pcb.add_u64(l_cluster_num_object_degraded, "num_object_degraded", "Number of degraded (missing replicas) objects");
+    pcb.add_u64(l_cluster_num_object_misplaced, "num_object_misplaced", "Number of misplaced (wrong location in the cluster) objects");
+    pcb.add_u64(l_cluster_num_object_unfound, "num_object_unfound", "Number of unfound objects");
+    pcb.add_u64(l_cluster_num_bytes, "num_bytes", "Total number of bytes of all objects");
+    pcb.add_u64(l_cluster_num_mds_up, "num_mds_up", "Number of MDSs that are up");
+    pcb.add_u64(l_cluster_num_mds_in, "num_mds_in", "Number of MDS in state \"in\" (they are in cluster)");
+    pcb.add_u64(l_cluster_num_mds_failed, "num_mds_failed", "Number of failed MDS");
+    pcb.add_u64(l_cluster_mds_epoch, "mds_epoch", "Current epoch of MDS map");
     cluster_logger = pcb.create_perf_counters();
   }
 
@@ -1869,7 +1875,7 @@ void Monitor::lose_election(epoch_t epoch, set<int> &q, int l, uint64_t features
     (*p)->election_finished();
   health_monitor->start(epoch);
 
-  logger->inc(l_mon_election_win);
+  logger->inc(l_mon_election_lose);
 
   finish_election();
 }
@@ -2430,7 +2436,7 @@ const MonCommand *Monitor::_get_moncommand(const string &cmd_prefix,
   MonCommand *this_cmd = NULL;
   for (MonCommand *cp = cmds;
        cp < &cmds[cmds_size]; cp++) {
-    if (cp->cmdstring.find(cmd_prefix) != string::npos) {
+    if (cp->cmdstring.compare(0, cmd_prefix.size(), cmd_prefix) == 0) {
       this_cmd = cp;
       break;
     }
@@ -2447,7 +2453,7 @@ bool Monitor::_allowed_command(MonSession *s, string &module, string &prefix,
   bool cmd_w = this_cmd->requires_perm('w');
   bool cmd_x = this_cmd->requires_perm('x');
 
-  bool capable = s->caps.is_capable(g_ceph_context, s->inst.name,
+  bool capable = s->caps.is_capable(g_ceph_context, s->entity_name,
                                     module, prefix, param_str_map,
                                     cmd_r, cmd_w, cmd_x);
 
@@ -2504,10 +2510,10 @@ void Monitor::set_leader_supported_commands(const MonCommand *cmds, int size)
 
 bool Monitor::is_keyring_required()
 {
-  string auth_cluster_required = g_conf->auth_supported.length() ?
-    g_conf->auth_supported : g_conf->auth_cluster_required;
-  string auth_service_required = g_conf->auth_supported.length() ?
-    g_conf->auth_supported : g_conf->auth_service_required;
+  string auth_cluster_required = g_conf->auth_supported.empty() ?
+    g_conf->auth_cluster_required : g_conf->auth_supported;
+  string auth_service_required = g_conf->auth_supported.empty() ?
+    g_conf->auth_service_required : g_conf->auth_supported;
 
   return auth_service_required == "cephx" ||
     auth_cluster_required == "cephx";
@@ -2588,16 +2594,41 @@ void Monitor::handle_command(MMonCommand *m)
     reply_command(m, -EINVAL, "command not known", 0);
     return;
   }
-  // validate command is in our map & matches, or forward
+  // validate command is in our map & matches, or forward if it is allowed
   const MonCommand *mon_cmd = _get_moncommand(prefix, mon_commands,
                                               ARRAY_SIZE(mon_commands));
-  if (!is_leader() && (!mon_cmd ||
-      (*leader_cmd != *mon_cmd))) {
-    dout(10) << "We don't match leader, forwarding request " << m << dendl;
-    forward_request_leader(m);
+  if (!is_leader()) {
+    if (!mon_cmd) {
+      if (leader_cmd->has_flag(MonCommand::FLAG_NOFORWARD)) {
+	reply_command(m, -EINVAL,
+		      "command not locally supported and not allowed to forward",
+		      0);
+	return;
+      }
+      dout(10) << "Command not locally supported, forwarding request "
+	       << m << dendl;
+      forward_request_leader(m);
+      return;
+    } else if (!mon_cmd->is_compat(leader_cmd)) {
+      if (mon_cmd->has_flag(MonCommand::FLAG_NOFORWARD)) {
+	reply_command(m, -EINVAL,
+		      "command not compatible with leader and not allowed to forward",
+		      0);
+	return;
+      }
+      dout(10) << "Command not compatible with leader, forwarding request "
+	       << m << dendl;
+      forward_request_leader(m);
+      return;
+    }
+  }
+
+  if (session->proxy_con && mon_cmd->has_flag(MonCommand::FLAG_NOFORWARD)) {
+    dout(10) << "Got forward for noforward command " << m << dendl;
+    reply_command(m, -EINVAL, "forward for noforward command", rdata, 0);
     return;
   }
-  
+
   /* what we perceive as being the service the command falls under */
   string service(mon_cmd->module);
 
@@ -2937,7 +2968,8 @@ void Monitor::forward_request_leader(PaxosServiceMessage *req)
     routed_requests[rr->tid] = rr;
     session->routed_request_tids.insert(rr->tid);
     
-    dout(10) << "forward_request " << rr->tid << " request " << *req << dendl;
+    dout(10) << "forward_request " << rr->tid << " request " << *req
+	     << " features " << rr->con_features << dendl;
 
     MForward *forward = new MForward(rr->tid, req,
 				     rr->con_features,

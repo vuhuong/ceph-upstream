@@ -619,11 +619,14 @@ public:
     osdmap(osdmap_),
     pgm(pgm_),
     tree(tree_),
-    average_util(100.0 * (double)pgm->osd_sum.kb_used / (double)pgm->osd_sum.kb),
+    average_util(0),
     min_var(-1),
     max_var(-1),
     stddev(0),
-    sum(0) {}
+    sum(0) {
+    if (pgm->osd_sum.kb)
+      average_util = 100.0 * (double)pgm->osd_sum.kb_used / (double)pgm->osd_sum.kb;
+  }
 
 protected:
   void dump_stray(F *f) {
@@ -639,8 +642,9 @@ protected:
 
     float reweight = qi.is_bucket() ? -1 : osdmap->get_weightf(qi.id);
     int64_t kb = 0, kb_used = 0, kb_avail = 0;
-    double util = get_bucket_utilization(qi.id, kb, kb_used, kb_avail) ?
-      100.0 * (double)kb_used / (double)kb : 0;
+    double util = 0;
+    if (get_bucket_utilization(qi.id, kb, kb_used, kb_avail) && kb > 0)
+      util = 100.0 * (double)kb_used / (double)kb;
     double var = 1.0;
     if (average_util)
       var = util / average_util;
@@ -679,7 +683,7 @@ protected:
       kb = p->second.kb;
       kb_used = p->second.kb_used;
       kb_avail = p->second.kb_avail;
-      return true;
+      return kb > 0;
     }
 
     kb = 0;
@@ -695,7 +699,7 @@ protected:
       kb_used += kb_used_i;
       kb_avail += kb_avail_i;
     }
-    return true;
+    return kb > 0;
   }
 
 protected:
@@ -1006,6 +1010,8 @@ void OSDMonitor::share_map_with_random_osd()
   // whatev, they'll request more if they need it
   MOSDMap *m = build_incremental(osdmap.get_epoch() - 1, osdmap.get_epoch());
   s->con->send_message(m);
+  // NOTE: do *not* record osd has up to this epoch (as we do
+  // elsewhere) as they may still need to request older values.
 }
 
 version_t OSDMonitor::get_trim_to()
@@ -1228,8 +1234,9 @@ bool OSDMonitor::preprocess_failure(MOSDFailure *m)
   }
 
   // already reported?
-  if (osdmap.is_down(badboy)) {
-    dout(5) << "preprocess_failure dup: " << m->get_target() << ", from " << m->get_orig_source_inst() << dendl;
+  if (osdmap.is_down(badboy) ||
+      osdmap.get_up_from(badboy) > m->get_epoch()) {
+    dout(5) << "preprocess_failure dup/old: " << m->get_target() << ", from " << m->get_orig_source_inst() << dendl;
     if (m->get_epoch() < osdmap.get_epoch())
       send_incremental(m, m->get_epoch()+1);
     goto didit;
@@ -1772,8 +1779,13 @@ bool OSDMonitor::prepare_boot(MOSDBoot *m)
 	xi.laggy_probability * (1.0 - g_conf->mon_osd_laggy_weight);
       dout(10) << " laggy, now xi " << xi << dendl;
     }
+
     // set features shared by the osd
-    xi.features = m->get_connection()->get_features();
+    if (m->osd_features)
+      xi.features = m->osd_features;
+    else
+      xi.features = m->get_connection()->get_features();
+
     pending_inc.new_xinfo[from] = xi;
 
     // wait
@@ -2113,10 +2125,13 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
     osd = req->get_source().num();
     map<int,epoch_t>::iterator p = osd_epoch.find(osd);
     if (p != osd_epoch.end()) {
-      dout(10) << " osd." << osd << " should have epoch " << p->second << dendl;
-      first = p->second + 1;
-      if (first > osdmap.get_epoch())
-	return;
+      if (first <= p->second) {
+	dout(10) << __func__ << " osd." << osd << " should already have epoch "
+		 << p->second << dendl;
+	first = p->second + 1;
+	if (first > osdmap.get_epoch())
+	  return;
+      }
     }
   }
 
@@ -2137,7 +2152,7 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
     mon->send_reply(req, m);
 
     if (osd >= 0)
-      osd_epoch[osd] = osdmap.get_epoch();
+      note_osd_has_epoch(osd, osdmap.get_epoch());
     return;
   }
 
@@ -2150,7 +2165,27 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
   mon->send_reply(req, m);
 
   if (osd >= 0)
-    osd_epoch[osd] = last;
+    note_osd_has_epoch(osd, last);
+}
+
+// FIXME: we assume the OSD actually receives this.  if the mon
+// session drops and they reconnect we may not share the same maps
+// with them again, which could cause a strange hang (perhaps stuck
+// 'waiting for osdmap' requests?).  this information should go in the
+// MonSession, but I think these functions need to be refactored in
+// terms of MonSession first for that to work.
+void OSDMonitor::note_osd_has_epoch(int osd, epoch_t epoch)
+{
+  dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
+  map<int,epoch_t>::iterator p = osd_epoch.find(osd);
+  if (p != osd_epoch.end()) {
+    dout(20) << __func__ << " osd." << osd << " epoch " << epoch
+	     << " (was " << p->second << ")" << dendl;
+    p->second = epoch;
+  } else {
+    dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
+    osd_epoch[osd] = epoch;
+  }
 }
 
 void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
@@ -2182,6 +2217,10 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
     MOSDMap *m = build_incremental(first, last);
     session->con->send_message(m);
     first = last + 1;
+
+    if (session->inst.name.is_osd())
+      note_osd_has_epoch(session->inst.name.num(), last);
+
     if (onetime)
       break;
   }
@@ -2473,6 +2512,7 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
 			 CEPH_OSDMAP_NOIN |
 			 CEPH_OSDMAP_NOOUT |
 			 CEPH_OSDMAP_NOBACKFILL |
+			 CEPH_OSDMAP_NOREBALANCE |
 			 CEPH_OSDMAP_NORECOVER |
 			 CEPH_OSDMAP_NOSCRUB |
 			 CEPH_OSDMAP_NODEEP_SCRUB |
@@ -3071,6 +3111,8 @@ bool OSDMonitor::preprocess_command(MMonCommand *m)
        f->dump_string("erasure_code_profile", p->erasure_code_profile);
       } else if (var == "min_read_recency_for_promote") {
 	f->dump_int("min_read_recency_for_promote", p->min_read_recency_for_promote);
+      } else if (var == "write_fadvise_dontneed") {
+	f->dump_string("write_fadvise_dontneed", p->has_flag(pg_pool_t::FLAG_WRITE_FADVISE_DONTNEED) ? "true" : "false");
       }
 
       f->close_section();
@@ -3122,6 +3164,8 @@ bool OSDMonitor::preprocess_command(MMonCommand *m)
        ss << "erasure_code_profile: " << p->erasure_code_profile;
       } else if (var == "min_read_recency_for_promote") {
 	ss << "min_read_recency_for_promote: " << p->min_read_recency_for_promote;
+      } else if (var == "write_fadvise_dontneed") {
+	ss << "write_fadvise_dontneed: " <<  (p->has_flag(pg_pool_t::FLAG_WRITE_FADVISE_DONTNEED) ? "true" : "false");
       }
 
       rdata.append(ss);
@@ -3411,7 +3455,7 @@ bool OSDMonitor::update_pools_status()
       (pool.quota_max_bytes > 0 && (uint64_t)sum.num_bytes >= pool.quota_max_bytes) ||
       (pool.quota_max_objects > 0 && (uint64_t)sum.num_objects >= pool.quota_max_objects);
 
-    if (pool.get_flags() & pg_pool_t::FLAG_FULL) {
+    if (pool.has_flag(pg_pool_t::FLAG_FULL)) {
       if (pool_is_full)
         continue;
 
@@ -3458,7 +3502,7 @@ void OSDMonitor::get_pools_health(
     const pg_pool_t &pool = it->second;
     const string& pool_name = osdmap.get_pool_name(it->first);
 
-    if (pool.get_flags() & pg_pool_t::FLAG_FULL) {
+    if (pool.has_flag(pg_pool_t::FLAG_FULL)) {
       // uncomment these asserts if/when we update the FULL flag on pg_stat update
       //assert((pool.quota_max_objects > 0) || (pool.quota_max_bytes > 0));
 
@@ -3477,7 +3521,7 @@ void OSDMonitor::get_pools_health(
       health_status_t status = HEALTH_OK;
       if ((uint64_t)sum.num_objects >= pool.quota_max_objects) {
 	// uncomment these asserts if/when we update the FULL flag on pg_stat update
-        //assert(pool.get_flags() & pg_pool_t::FLAG_FULL);
+        //assert(pool.has_flag(pg_pool_t::FLAG_FULL));
       } else if (crit_threshold > 0 &&
 		 sum.num_objects >= pool.quota_max_objects*crit_threshold) {
         ss << "pool '" << pool_name
@@ -3504,7 +3548,7 @@ void OSDMonitor::get_pools_health(
       stringstream ss;
       if ((uint64_t)sum.num_bytes >= pool.quota_max_bytes) {
 	// uncomment these asserts if/when we update the FULL flag on pg_stat update
-	//assert(pool.get_flags() & pg_pool_t::FLAG_FULL);
+	//assert(pool.has_flag(pg_pool_t::FLAG_FULL));
       } else if (crit_threshold > 0 &&
 		 sum.num_bytes >= pool.quota_max_bytes*crit_threshold) {
         ss << "pool '" << pool_name
@@ -4365,6 +4409,15 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
       return -EINVAL;
     }
     p.min_read_recency_for_promote = n;
+  } else if (var == "write_fadvise_dontneed") {
+    if (val == "true" || (interr.empty() && n == 1)) {
+      p.flags |= pg_pool_t::FLAG_WRITE_FADVISE_DONTNEED;
+    } else if (val == "false" || (interr.empty() && n == 0)) {
+      p.flags &= ~pg_pool_t::FLAG_WRITE_FADVISE_DONTNEED;
+    } else {
+      ss << "expecting value 'true', 'false', '0', or '1'";
+      return -EINVAL;
+    }
   } else {
     ss << "unrecognized variable '" << var << "'";
     return -EINVAL;
@@ -4473,7 +4526,14 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
     dout(10) << " testing map" << dendl;
     stringstream ess;
     CrushTester tester(crush, ess);
-    tester.test();
+    int r = tester.test_with_crushtool();
+    if (r < 0) {
+      derr << "error on crush map: " << ess.str() << dendl;
+      ss << "Failed to parse crushmap: " << ess.str();
+      err = r;
+      goto reply;
+    }
+
     dout(10) << " result " << ess.str() << dendl;
 
     pending_inc.crush = data;
@@ -4510,9 +4570,9 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
       goto reply;
     }
     int bucketno;
-    err = newcrush.add_bucket(0, CRUSH_BUCKET_STRAW,
-				       CRUSH_HASH_DEFAULT, type, 0, NULL,
-				       NULL, &bucketno);
+    err = newcrush.add_bucket(0, 0,
+			      CRUSH_HASH_DEFAULT, type, 0, NULL,
+			      NULL, &bucketno);
     if (err < 0) {
       ss << "add_bucket error: '" << cpp_strerror(err) << "'";
       goto reply;
@@ -5093,6 +5153,11 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
 	  goto wait;
 	if (err)
 	  goto reply;
+      } else if (plugin == "shec") {
+	if (!g_ceph_context->check_experimental_feature_enabled("shec", &ss)) {
+	  err = -EINVAL;
+	  goto reply;
+	}
       }
       dout(20) << "erasure code profile " << name << " set" << dendl;
       pending_inc.set_erasure_code_profile(name, profile_map);
@@ -5266,6 +5331,8 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
       return prepare_set_flag(m, CEPH_OSDMAP_NOIN);
     else if (key == "nobackfill")
       return prepare_set_flag(m, CEPH_OSDMAP_NOBACKFILL);
+    else if (key == "norebalance")
+      return prepare_set_flag(m, CEPH_OSDMAP_NOREBALANCE);
     else if (key == "norecover")
       return prepare_set_flag(m, CEPH_OSDMAP_NORECOVER);
     else if (key == "noscrub")
@@ -5296,6 +5363,8 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
       return prepare_unset_flag(m, CEPH_OSDMAP_NOIN);
     else if (key == "nobackfill")
       return prepare_unset_flag(m, CEPH_OSDMAP_NOBACKFILL);
+    else if (key == "norebalance")
+      return prepare_unset_flag(m, CEPH_OSDMAP_NOREBALANCE);
     else if (key == "norecover")
       return prepare_unset_flag(m, CEPH_OSDMAP_NORECOVER);
     else if (key == "noscrub")
@@ -6469,7 +6538,7 @@ done:
     }
     string out_str;
     err = reweight_by_utilization(oload, out_str, true,
-				  pools.size() ? &pools : NULL);
+				  pools.empty() ? NULL : &pools);
     if (err < 0) {
       ss << "FAILED reweight-by-pg: " << out_str;
     } else if (err == 0) {

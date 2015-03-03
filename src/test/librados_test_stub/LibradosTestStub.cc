@@ -5,6 +5,7 @@
 #include "common/ceph_argparse.h"
 #include "common/common_init.h"
 #include "common/config.h"
+#include "common/debug.h"
 #include "common/snap_types.h"
 #include "global/global_context.h"
 #include "librados/AioCompletionImpl.h"
@@ -17,6 +18,9 @@
 #include <deque>
 #include <list>
 #include <vector>
+#include "include/assert.h"
+
+#define dout_subsys ceph_subsys_rados
 
 static librados::TestClassHandler *get_class_handler() {
   static librados::TestClassHandler *s_class_handler = NULL;
@@ -524,6 +528,11 @@ int IoCtx::write(const std::string& oid, bufferlist& bl, size_t len,
   return ctx->write(oid, bl, len, off);
 }
 
+int IoCtx::write_full(const std::string& oid, bufferlist& bl) {
+  TestIoCtxImpl *ctx = reinterpret_cast<TestIoCtxImpl*>(io_ctx_impl);
+  return ctx->write_full(oid, bl);
+}
+
 static int save_operation_result(int result, int *pval) {
   if (pval != NULL) {
     *pval = result;
@@ -678,6 +687,12 @@ AioCompletion *Rados::aio_create_completion(void *cb_arg,
   return new AioCompletion(c);
 }
 
+int Rados::blacklist_add(const std::string& client_address,
+			 uint32_t expire_seconds) {
+  TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
+  return impl->blacklist_add(client_address, expire_seconds);
+}
+
 int Rados::conf_parse_env(const char *env) const {
   return rados_conf_parse_env(reinterpret_cast<rados_t>(client), env);
 }
@@ -760,7 +775,7 @@ int Rados::pool_list(std::list<std::string>& v) {
   return 0;
 }
 
-int librados::Rados::pool_list2(std::list<std::pair<int64_t, std::string> >& v)
+int Rados::pool_list2(std::list<std::pair<int64_t, std::string> >& v)
 {
   TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
   return impl->pool_list(v);
@@ -785,9 +800,17 @@ void Rados::shutdown() {
   client = NULL;
 }
 
+void Rados::test_blacklist_self(bool set) {
+}
+
 int Rados::wait_for_latest_osdmap() {
   TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
   return impl->wait_for_latest_osdmap();
+}
+
+int Rados::watch_flush() {
+  TestRadosClient *impl = reinterpret_cast<TestRadosClient*>(client);
+  return impl->watch_flush();
 }
 
 WatchCtx::~WatchCtx() {
@@ -942,6 +965,19 @@ int cls_cxx_write_full(cls_method_context_t hctx, bufferlist *inbl) {
 }
 
 int cls_log(int level, const char *format, ...) {
+  int size = 256;
+  va_list ap;
+  while (1) {
+    char buf[size];
+    va_start(ap, format);
+    int n = vsnprintf(buf, size, format, ap);
+    va_end(ap);
+    if ((n > -1 && n < size) || size > 8196) {
+      dout(level) << buf << dendl;
+      return n;
+    }
+    size *= 2;
+  }
   return 0;
 }
 

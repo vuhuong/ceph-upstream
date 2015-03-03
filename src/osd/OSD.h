@@ -134,6 +134,7 @@ enum {
   l_osd_tier_dirty,
   l_osd_tier_clean,
   l_osd_tier_delay,
+  l_osd_tier_proxy_read,
 
   l_osd_agent_wake,
   l_osd_agent_skip,
@@ -2084,7 +2085,9 @@ protected:
       pg->put("SnapTrimWQ");
     }
     void _clear() {
-      osd->snap_trim_queue.clear();
+      while (PG *pg = _dequeue()) {
+	pg->put("SnapTrimWQ");
+      }
     }
   } snap_trim_wq;
 
@@ -2299,6 +2302,17 @@ protected:
 private:
   static int write_meta(ObjectStore *store,
 			uuid_d& cluster_fsid, uuid_d& osd_fsid, int whoami);
+
+  void handle_rep_scrub(MOSDRepScrub *m);
+  void handle_scrub(struct MOSDScrub *m);
+  void handle_osd_ping(class MOSDPing *m);
+  void handle_op(OpRequestRef& op, OSDMapRef& osdmap);
+
+  template <typename T, int MSGTYPE>
+  void handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap);
+
+  int init_op_flags(OpRequestRef& op);
+
 public:
   static int peek_meta(ObjectStore *store, string& magic,
 		       uuid_d& cluster_fsid, uuid_d& osd_fsid, int& whoami);
@@ -2314,22 +2328,10 @@ public:
 
   void handle_signal(int signum);
 
-  void handle_rep_scrub(MOSDRepScrub *m);
-  void handle_scrub(struct MOSDScrub *m);
-  void handle_osd_ping(class MOSDPing *m);
-  void handle_op(OpRequestRef& op, OSDMapRef& osdmap);
-
-  template <typename T, int MSGTYPE>
-  void handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap);
-
   /// check if we can throw out op from a disconnected client
-  static bool op_is_discardable(class MOSDOp *m);
-  /// check if op should be (re)queued for processing
+  static bool op_is_discardable(MOSDOp *m);
+
 public:
-  void force_remount();
-
-  int init_op_flags(OpRequestRef& op);
-
   OSDService service;
   friend class OSDService;
 };

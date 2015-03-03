@@ -179,9 +179,8 @@ AsyncConnection::AsyncConnection(CephContext *cct, AsyncMessenger *m, EventCente
     out_seq(0), in_seq(0), in_seq_acked(0), state(STATE_NONE), state_after_send(0), sd(-1),
     port(-1), lock("AsyncConnection::lock"), open_write(false), keepalive(false), recv_buf(NULL),
     recv_max_prefetch(MIN(msgr->cct->_conf->ms_tcp_prefetch_max_size, TCP_PREFETCH_MIN_SIZE)),
-    recv_start(0), recv_end(0), stop_lock("AsyncConnection::stop_lock"),
-    got_bad_auth(false), authorizer(NULL), replacing(false), once_session_reset(false),
-    state_buffer(NULL), state_offset(0), net(cct), center(c)
+    recv_start(0), recv_end(0), got_bad_auth(false), authorizer(NULL), replacing(false),
+    is_reset_from_peer(false), once_ready(false), state_buffer(NULL), state_offset(0), net(cct), center(c)
 {
   read_handler.reset(new C_handle_read(this));
   write_handler.reset(new C_handle_write(this));
@@ -200,7 +199,7 @@ AsyncConnection::~AsyncConnection()
 {
   assert(out_q.empty());
   assert(sent.empty());
-  assert(!authorizer);
+  delete authorizer;
   if (recv_buf)
     delete[] recv_buf;
   if (state_buffer)
@@ -286,7 +285,6 @@ int AsyncConnection::_try_send(bufferlist send_bl, bool send)
   // standby?
   if (is_queued() && state == STATE_STANDBY && !policy.server) {
     assert(!outcoming_bl.length());
-    connect_seq++;
     state = STATE_CONNECTING;
     center->dispatch_event_external(read_handler);
     return 0;
@@ -313,7 +311,7 @@ int AsyncConnection::_try_send(bufferlist send_bl, bool send)
   uint64_t left_pbrs = outcoming_bl.buffers().size();
   while (left_pbrs) {
     struct msghdr msg;
-    uint64_t size = MIN(left_pbrs, sizeof(msgvec));
+    uint64_t size = MIN(left_pbrs, IOV_MAX);
     left_pbrs -= size;
     memset(&msg, 0, sizeof(msg));
     msg.msg_iovlen = 0;
@@ -379,7 +377,7 @@ int AsyncConnection::_try_send(bufferlist send_bl, bool send)
 int AsyncConnection::read_until(uint64_t len, char *p)
 {
   assert(len);
-  ldout(async_msgr->cct, 20) << __func__ << " len is " << len << " state_offset is "
+  ldout(async_msgr->cct, 25) << __func__ << " len is " << len << " state_offset is "
                              << state_offset << dendl;
 
   if (async_msgr->cct->_conf->ms_inject_socket_failures && sd >= 0) {
@@ -397,7 +395,7 @@ int AsyncConnection::read_until(uint64_t len, char *p)
     memcpy(p, recv_buf+recv_start, to_read);
     recv_start += to_read;
     left -= to_read;
-    ldout(async_msgr->cct, 20) << __func__ << " got " << to_read << " in buffer "
+    ldout(async_msgr->cct, 25) << __func__ << " got " << to_read << " in buffer "
                                << " left is " << left << " buffer still has "
                                << recv_end - recv_start << dendl;
     if (left == 0) {
@@ -413,7 +411,7 @@ int AsyncConnection::read_until(uint64_t len, char *p)
     /* this was a large read, we don't prefetch for these */
     do {
       r = read_bulk(sd, p+state_offset, left);
-      ldout(async_msgr->cct, 20) << __func__ << " read_bulk left is " << left << " got " << r << dendl;
+      ldout(async_msgr->cct, 25) << __func__ << " read_bulk left is " << left << " got " << r << dendl;
       if (r < 0) {
         ldout(async_msgr->cct, 1) << __func__ << " read failed, state is " << get_state_name(state) << dendl;
         return -1;
@@ -427,7 +425,7 @@ int AsyncConnection::read_until(uint64_t len, char *p)
   } else {
     do {
       r = read_bulk(sd, recv_buf+recv_end, recv_max_prefetch);
-      ldout(async_msgr->cct, 20) << __func__ << " read_bulk recv_end is " << recv_end
+      ldout(async_msgr->cct, 25) << __func__ << " read_bulk recv_end is " << recv_end
                                  << " left is " << left << " got " << r << dendl;
       if (r < 0) {
         ldout(async_msgr->cct, 1) << __func__ << " read failed, state is " << get_state_name(state) << dendl;
@@ -446,7 +444,7 @@ int AsyncConnection::read_until(uint64_t len, char *p)
     state_offset += (recv_end - recv_start);
     recv_end = recv_start = 0;
   }
-  ldout(async_msgr->cct, 20) << __func__ << " need len " << len << " remaining "
+  ldout(async_msgr->cct, 25) << __func__ << " need len " << len << " remaining "
                              << len - state_offset << " bytes, state is "
                              << get_state_name(state) << dendl;
   return len - state_offset;
@@ -574,16 +572,19 @@ void AsyncConnection::process()
 
           if (has_feature(CEPH_FEATURE_NOSRCADDR)) {
             header = *((ceph_msg_header*)state_buffer);
-            header_crc = ceph_crc32c(0, (unsigned char *)&header,
-                                    sizeof(header) - sizeof(header.crc));
+            if (msgr->crcflags & MSG_CRC_HEADER)
+              header_crc = ceph_crc32c(0, (unsigned char *)&header,
+                                       sizeof(header) - sizeof(header.crc));
           } else {
             oldheader = *((ceph_msg_header_old*)state_buffer);
             // this is fugly
             memcpy(&header, &oldheader, sizeof(header));
             header.src = oldheader.src.name;
             header.reserved = oldheader.reserved;
-            header.crc = oldheader.crc;
-            header_crc = ceph_crc32c(0, (unsigned char *)&oldheader, sizeof(oldheader) - sizeof(oldheader.crc));
+            if (msgr->crcflags & MSG_CRC_HEADER) {
+              header.crc = oldheader.crc;
+              header_crc = ceph_crc32c(0, (unsigned char *)&oldheader, sizeof(oldheader) - sizeof(oldheader.crc));
+            }
           }
 
           ldout(async_msgr->cct, 20) << __func__ << " got envelope type=" << header.type
@@ -593,9 +594,9 @@ void AsyncConnection::process()
                               << " off " << header.data_off << dendl;
 
           // verify header crc
-          if (header_crc != header.crc) {
+          if (msgr->crcflags & MSG_CRC_HEADER && header_crc != header.crc) {
             ldout(async_msgr->cct,0) << __func__ << " reader got bad header crc "
-                              << header_crc << " != " << header.crc << dendl;
+                                     << header_crc << " != " << header.crc << dendl;
             goto fail;
           }
 
@@ -823,8 +824,15 @@ void AsyncConnection::process()
             message->put();
             if (has_feature(CEPH_FEATURE_RECONNECT_SEQ) && async_msgr->cct->_conf->ms_die_on_old_message)
               assert(0 == "old msgs despite reconnect_seq feature");
-            goto fail;
+            break;
           }
+          if (message->get_seq() > in_seq + 1) {
+            ldout(async_msgr->cct, 0) << __func__ << " missed message?  skipped from seq "
+                                      << in_seq << " to " << message->get_seq() << dendl;
+            if (async_msgr->cct->_conf->ms_die_on_skipped_message)
+              assert(0 == "skipped incoming seq");
+          }
+
           message->set_connection(this);
 
           // note last received message.
@@ -868,7 +876,7 @@ void AsyncConnection::process()
 
       case STATE_CLOSED:
         {
-          if (sd > 0)
+          if (sd >= 0)
             center->delete_file_event(sd, EVENT_READABLE);
           ldout(async_msgr->cct, 20) << __func__ << " socket closed" << dendl;
           break;
@@ -1218,6 +1226,7 @@ int AsyncConnection::_process_connection()
         peer_global_seq = connect_reply.global_seq;
         policy.lossy = connect_reply.flags & CEPH_MSG_CONNECT_LOSSY;
         state = STATE_OPEN;
+        once_ready = true;
         connect_seq += 1;
         assert(connect_seq == connect_reply.connect_seq);
         backoff = utime_t();
@@ -1461,10 +1470,10 @@ int AsyncConnection::handle_connect_reply(ceph_msg_connect &connect, ceph_msg_co
   }
   if (reply.tag == CEPH_MSGR_TAG_RETRY_SESSION) {
     assert(reply.connect_seq > connect_seq);
-    connect_seq = reply.connect_seq;
     ldout(async_msgr->cct, 10) << __func__ << " connect got RETRY_SESSION "
-                         << connect_seq << " -> "
-                         << reply.connect_seq << dendl;
+                               << connect_seq << " -> "
+                               << reply.connect_seq << dendl;
+    connect_seq = reply.connect_seq;
     state = STATE_CONNECTING_SEND_CONNECT_MSG;
   }
   if (reply.tag == CEPH_MSGR_TAG_WAIT) {
@@ -1500,7 +1509,6 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
   int r = 0;
   ceph_msg_connect_reply reply;
   bufferlist reply_bl;
-  bool is_reset_from_peer = false;
 
   memset(&reply, 0, sizeof(reply));
   reply.protocol_version = async_msgr->get_proto_version(peer_type, false);
@@ -1646,11 +1654,10 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
     assert(connect.connect_seq > existing->connect_seq);
     assert(connect.global_seq >= existing->peer_global_seq);
     if (policy.resetcheck &&   // RESETSESSION only used by servers; peers do not reset each other
-        existing->connect_seq == 0 && once_session_reset) {
+        existing->connect_seq == 0) {
       ldout(async_msgr->cct, 0) << __func__ << " accept we reset (peer sent cseq "
                           << connect.connect_seq << ", " << existing << ".cseq = "
                           << existing->connect_seq << "), sending RESETSESSION" << dendl;
-      once_session_reset = false;
       return _reply_accept(CEPH_MSGR_TAG_RESETSESSION, connect, reply, authorizer_reply);
     }
 
@@ -1689,8 +1696,8 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
   if (existing->replacing || existing->state == STATE_CLOSED) {
     ldout(async_msgr->cct, 1) << __func__ << " existing racing replace or mark_down happened while replacing."
                               << " state=" << get_state_name(existing->state) << dendl;
-    reply.connect_seq = connect.connect_seq + 1;
-    r = _reply_accept(CEPH_MSGR_TAG_RETRY_SESSION, connect, reply, authorizer_reply);
+    reply.global_seq = existing->peer_global_seq;
+    r = _reply_accept(CEPH_MSGR_TAG_RETRY_GLOBAL, connect, reply, authorizer_reply);
     existing->lock.Unlock();
     if (r < 0)
       goto fail;
@@ -1707,17 +1714,19 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
 
     // reset the in_seq if this is a hard reset from peer,
     // otherwise we respect our original connection's value
-    if (is_reset_from_peer)
-      existing->in_seq = 0;
+    if (is_reset_from_peer) {
+      existing->is_reset_from_peer = true;
+    }
 
     // Now existing connection will be alive and the current connection will
     // exchange socket with existing connection because we want to maintain
     // original "connection_state"
-    existing->center->delete_file_event(existing->sd, EVENT_READABLE|EVENT_WRITABLE);
+    if (existing->sd >= 0)
+      existing->center->delete_file_event(existing->sd, EVENT_READABLE|EVENT_WRITABLE);
     center->delete_file_event(sd, EVENT_READABLE|EVENT_WRITABLE);
     existing->center->create_file_event(sd, EVENT_READABLE, existing->read_handler);
 
-    reply.connect_seq = connect.connect_seq + 1;
+    reply.global_seq = existing->peer_global_seq;
 
     // Clean up output buffer
     existing->outcoming_bl.clear();
@@ -1731,7 +1740,7 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
     // there should exist any buffer
     assert(recv_start == recv_end);
 
-    if (existing->_reply_accept(CEPH_MSGR_TAG_RETRY_SESSION, connect, reply, authorizer_reply) < 0) {
+    if (existing->_reply_accept(CEPH_MSGR_TAG_RETRY_GLOBAL, connect, reply, authorizer_reply) < 0) {
       // handle error
       existing->center->dispatch_event_external(existing->write_handler);
     }
@@ -1750,14 +1759,16 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
 
   int next_state;
 
-  // if it is a hard reset from peer(in_seq == 0), we don't need a round-trip to negotiate in/out sequence
-  if ((connect.features & CEPH_FEATURE_RECONNECT_SEQ) && in_seq) {
+  // if it is a hard reset from peer, we don't need a round-trip to negotiate in/out sequence
+  if ((connect.features & CEPH_FEATURE_RECONNECT_SEQ) && !is_reset_from_peer) {
     reply.tag = CEPH_MSGR_TAG_SEQ;
     next_state = STATE_ACCEPTING_WAIT_SEQ;
   } else {
     reply.tag = CEPH_MSGR_TAG_READY;
     next_state = STATE_ACCEPTING_READY;
     discard_requeued_up_to(0);
+    is_reset_from_peer = false;
+    in_seq = 0;
   }
 
   // send READY reply
@@ -1811,14 +1822,14 @@ int AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlist &a
     goto fail_registered;
   }
 
-  // notify
-  center->dispatch_event_external(accept_handler);
-  async_msgr->ms_deliver_handle_fast_accept(this);
-
-
   r = _try_send(reply_bl);
   if (r < 0)
     goto fail_registered;
+
+  // notify
+  center->dispatch_event_external(accept_handler);
+  async_msgr->ms_deliver_handle_fast_accept(this);
+  once_ready = true;
 
   if (r == 0) {
     state = next_state;
@@ -1887,19 +1898,20 @@ int AsyncConnection::send_message(Message *m)
       center->dispatch_event_external(write_handler);
     }
   } else if (state == STATE_CLOSED) {
-      ldout(async_msgr->cct, 10) << __func__ << " connection closed."
-                                 << " Drop message " << m << dendl;
+    ldout(async_msgr->cct, 10) << __func__ << " connection closed."
+                               << " Drop message " << m << dendl;
+    m->put();
   } else if (async_msgr->get_myaddr() == get_peer_addr()) { //loopback connection
-      ldout(async_msgr->cct, 20) << __func__ << " " << *m << " local" << dendl;
-      local_messages.push_back(m);
-      center->dispatch_event_external(local_deliver_handler);
+    ldout(async_msgr->cct, 20) << __func__ << " " << *m << " local" << dendl;
+    local_messages.push_back(m);
+    center->dispatch_event_external(local_deliver_handler);
   } else {
     out_q[m->get_priority()].push_back(m);
     if (state == STATE_STANDBY && !policy.server) {
       ldout(async_msgr->cct, 10) << __func__ << " state is " << get_state_name(state)
                                  << " policy.server is false" << dendl;
       _connect();
-    } else if (sd > 0 && !open_write) {
+    } else if (sd >= 0 && !open_write) {
       center->dispatch_event_external(write_handler);
     }
   }
@@ -1998,6 +2010,8 @@ void AsyncConnection::fault()
   if (sd >= 0) {
     shutdown_socket();
     center->delete_file_event(sd, EVENT_READABLE|EVENT_WRITABLE);
+    ::close(sd);
+    sd = -1;
   }
   open_write = false;
 
@@ -2007,6 +2021,14 @@ void AsyncConnection::fault()
   state_offset = 0;
   replacing = false;
   outcoming_bl.clear();
+  if (!once_ready && !is_queued() &&
+      state >=STATE_ACCEPTING && state <= STATE_ACCEPTING_WAIT_CONNECT_MSG_AUTH) {
+    ldout(async_msgr->cct, 0) << __func__ << " with nothing to send and in the half "
+                              << "accept state just closed, state="
+                              << get_state_name(state) << dendl;
+    _stop();
+    return ;
+  }
   if (policy.standby && !is_queued()) {
     ldout(async_msgr->cct,0) << __func__ << " with nothing to send, going to standby" << dendl;
     state = STATE_STANDBY;
@@ -2015,7 +2037,7 @@ void AsyncConnection::fault()
 
   if (!(state >= STATE_CONNECTING && state < STATE_CONNECTING_READY)) {
     // policy maybe empty when state is in accept
-    if (policy.server || (state >= STATE_ACCEPTING && state < STATE_ACCEPTING_WAIT_SEQ)) {
+    if (policy.server) {
       ldout(async_msgr->cct, 0) << __func__ << " server, going to standby" << dendl;
       state = STATE_STANDBY;
     } else {
@@ -2049,40 +2071,35 @@ void AsyncConnection::was_session_reset()
   center->dispatch_event_external(remote_reset_handler);
 
   if (randomize_out_seq()) {
-    lsubdout(async_msgr->cct,ms,15) << __func__ << " could not get random bytes to set seq number for session reset; set seq number to " << out_seq << dendl;
+    ldout(async_msgr->cct, 15) << __func__ << " could not get random bytes to set seq number for session reset; set seq number to " << out_seq << dendl;
   }
 
   in_seq = 0;
   connect_seq = 0;
   in_seq_acked = 0;
-  once_session_reset = true;
+  once_ready = false;
 }
 
 void AsyncConnection::_stop()
 {
   assert(lock.is_locked());
+  if (state == STATE_CLOSED)
+    return ;
+
   ldout(async_msgr->cct, 10) << __func__ << dendl;
-  if (sd > 0)
+  if (sd >= 0)
     center->delete_file_event(sd, EVENT_READABLE|EVENT_WRITABLE);
 
   discard_out_queue();
   async_msgr->unregister_conn(this);
 
-  if (async_msgr->cct->_conf->ms_inject_internal_delays) {
-    ldout(msgr->cct, 10) << __func__ << " sleep for "
-                         << async_msgr->cct->_conf->ms_inject_internal_delays
-                         << dendl;
-    utime_t t;
-    t.set_from_double(async_msgr->cct->_conf->ms_inject_internal_delays);
-    t.sleep();
-  }
-
   state = STATE_CLOSED;
-  shutdown_socket();
   open_write = false;
   state_offset = 0;
-  if (sd > 0)
+  if (sd >= 0) {
+    shutdown_socket();
     ::close(sd);
+  }
   sd = -1;
   for (set<uint64_t>::iterator it = register_time_events.begin();
        it != register_time_events.end(); ++it)
@@ -2156,7 +2173,7 @@ int AsyncConnection::_send(Message *m)
   return rc;
 }
 
-int AsyncConnection::write_message(ceph_msg_header& header, ceph_msg_footer& footer,
+int AsyncConnection::write_message(const ceph_msg_header& header, const ceph_msg_footer& footer,
                                   bufferlist& blist)
 {
   bufferlist bl;
@@ -2176,8 +2193,12 @@ int AsyncConnection::write_message(ceph_msg_header& header, ceph_msg_footer& foo
     oldheader.src.addr = get_peer_addr();
     oldheader.orig_src = oldheader.src;
     oldheader.reserved = header.reserved;
-    oldheader.crc = ceph_crc32c(0, (unsigned char*)&oldheader,
-                                sizeof(oldheader) - sizeof(oldheader.crc));
+    if (msgr->crcflags & MSG_CRC_HEADER) {
+       oldheader.crc = ceph_crc32c(0, (unsigned char*)&oldheader,
+                                   sizeof(oldheader) - sizeof(oldheader.crc));
+    } else {
+       oldheader.crc = 0;
+    }
     bl.append((char*)&oldheader, sizeof(oldheader));
   }
 
@@ -2188,9 +2209,14 @@ int AsyncConnection::write_message(ceph_msg_header& header, ceph_msg_footer& foo
   if (has_feature(CEPH_FEATURE_MSG_AUTH)) {
     bl.append((char*)&footer, sizeof(footer));
   } else {
-    old_footer.front_crc = footer.front_crc;
-    old_footer.middle_crc = footer.middle_crc;
-    old_footer.data_crc = footer.data_crc;
+    if (msgr->crcflags & MSG_CRC_HEADER) {
+      old_footer.front_crc = footer.front_crc;
+      old_footer.middle_crc = footer.middle_crc;
+      old_footer.data_crc = footer.data_crc;
+    } else {
+       old_footer.front_crc = old_footer.middle_crc = 0;
+    }
+    old_footer.data_crc = msgr->crcflags & MSG_CRC_DATA ? footer.data_crc : 0;
     old_footer.flags = footer.flags;
     bl.append((char*)&old_footer, sizeof(old_footer));
   }

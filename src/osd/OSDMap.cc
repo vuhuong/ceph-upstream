@@ -1034,10 +1034,12 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     features |= CEPH_FEATURE_CRUSH_TUNABLES2;
   if (crush->has_nondefault_tunables3())
     features |= CEPH_FEATURE_CRUSH_TUNABLES3;
+  if (crush->has_v4_buckets())
+    features |= CEPH_FEATURE_CRUSH_V4;
   mask |= CEPH_FEATURES_CRUSH;
 
   for (map<int64_t,pg_pool_t>::const_iterator p = pools.begin(); p != pools.end(); ++p) {
-    if (p->second.flags & pg_pool_t::FLAG_HASHPSPOOL) {
+    if (p->second.has_flag(pg_pool_t::FLAG_HASHPSPOOL)) {
       features |= CEPH_FEATURE_OSDHASHPSPOOL;
     }
     if (p->second.is_erasure() &&
@@ -1088,22 +1090,26 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
   return features;
 }
 
-uint64_t OSDMap::get_up_osd_features() const
+void OSDMap::_calc_up_osd_features()
 {
   bool first = true;
-  uint64_t features = 0;
+  cached_up_osd_features = 0;
   for (int osd = 0; osd < max_osd; ++osd) {
     if (!is_up(osd))
       continue;
     const osd_xinfo_t &xi = get_xinfo(osd);
     if (first) {
-      features = xi.features;
+      cached_up_osd_features = xi.features;
       first = false;
     } else {
-      features &= xi.features;
+      cached_up_osd_features &= xi.features;
     }
   }
-  return features;
+}
+
+uint64_t OSDMap::get_up_osd_features() const
+{
+  return cached_up_osd_features;
 }
 
 void OSDMap::dedup(const OSDMap *o, OSDMap *n)
@@ -1256,6 +1262,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
     return -EINVAL;
   
   assert(inc.epoch == epoch+1);
+
   epoch++;
   modified = inc.modified;
 
@@ -1437,6 +1444,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
   }
 
   calc_num_osds();
+  _calc_up_osd_features();
   return 0;
 }
 
@@ -1568,6 +1576,7 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
     if (*p != CRUSH_ITEM_NONE &&
 	(*osd_primary_affinity)[*p] != CEPH_OSD_DEFAULT_PRIMARY_AFFINITY) {
       any = true;
+      break;
     }
   }
   if (!any)
@@ -2193,6 +2202,7 @@ void OSDMap::post_decode()
   }
 
   calc_num_osds();
+  _calc_up_osd_features();
 }
 
 void OSDMap::dump_erasure_code_profiles(const map<string,map<string,string> > &profiles,
@@ -2357,6 +2367,8 @@ string OSDMap::get_flag_string(unsigned f)
     s += ",noin";
   if (f & CEPH_OSDMAP_NOBACKFILL)
     s += ",nobackfill";
+  if (f & CEPH_OSDMAP_NOREBALANCE)
+    s += ",norebalance";
   if (f & CEPH_OSDMAP_NORECOVER)
     s += ",norecover";
   if (f & CEPH_OSDMAP_NOSCRUB)
@@ -2366,7 +2378,7 @@ string OSDMap::get_flag_string(unsigned f)
   if (f & CEPH_OSDMAP_NOTIERAGENT)
     s += ",notieragent";
   if (s.length())
-    s = s.erase(0, 1);
+    s.erase(0, 1);
   return s;
 }
 
@@ -2570,12 +2582,16 @@ void OSDMap::print_summary(Formatter *f, ostream& out) const
     f->dump_int("num_in_osds", get_num_in_osds());
     f->dump_bool("full", test_flag(CEPH_OSDMAP_FULL) ? true : false);
     f->dump_bool("nearfull", test_flag(CEPH_OSDMAP_NEARFULL) ? true : false);
+    f->dump_unsigned("num_remapped_pgs", get_num_pg_temp());
     f->close_section();
   } else {
     out << "     osdmap e" << get_epoch() << ": "
 	<< get_num_osds() << " osds: "
 	<< get_num_up_osds() << " up, "
-	<< get_num_in_osds() << " in\n";
+	<< get_num_in_osds() << " in";
+    if (get_num_pg_temp())
+      out << "; " << get_num_pg_temp() << " remapped pgs";
+    out << "\n";
     if (flags)
       out << "            flags " << get_flag_string() << "\n";
   }
@@ -2739,7 +2755,7 @@ int OSDMap::build_simple_crush_map(CephContext *cct, CrushWrapper& crush,
   // root
   int root_type = _build_crush_types(crush);
   int rootid;
-  int r = crush.add_bucket(0, CRUSH_BUCKET_STRAW, CRUSH_HASH_DEFAULT,
+  int r = crush.add_bucket(0, 0, CRUSH_HASH_DEFAULT,
 			   root_type, 0, NULL, NULL, &rootid);
   assert(r == 0);
   crush.set_item_name(rootid, "default");
@@ -2775,7 +2791,8 @@ int OSDMap::build_simple_crush_map_from_conf(CephContext *cct,
   // root
   int root_type = _build_crush_types(crush);
   int rootid;
-  int r = crush.add_bucket(0, CRUSH_BUCKET_STRAW, CRUSH_HASH_DEFAULT,
+  int r = crush.add_bucket(0, 0,
+			   CRUSH_HASH_DEFAULT,
 			   root_type, 0, NULL, NULL, &rootid);
   assert(r == 0);
   crush.set_item_name(rootid, "default");

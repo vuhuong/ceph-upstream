@@ -25,27 +25,15 @@
 #include "MDLog.h"
 #include "MDSMap.h"
 
-#include "include/filepath.h"
-
 #include "events/EUpdate.h"
 #include "events/EOpen.h"
 
 #include "msg/Messenger.h"
 #include "osdc/Objecter.h"
 
-#include "messages/MGenericMessage.h"
-#include "messages/MDiscover.h"
-#include "messages/MDiscoverReply.h"
-
-#include "messages/MDirUpdate.h"
-
 #include "messages/MInodeFileCaps.h"
-
 #include "messages/MLock.h"
 #include "messages/MClientLease.h"
-#include "messages/MDentryUnlink.h"
-
-#include "messages/MClientRequest.h"
 #include "messages/MClientReply.h"
 #include "messages/MClientCaps.h"
 #include "messages/MClientCapRelease.h"
@@ -1253,9 +1241,6 @@ bool Locker::rdlock_start(SimpleLock *lock, MDRequestRef& mut, bool as_anon)
       return true;
     }
 
-    if (!_rdlock_kick(lock, as_anon))
-      break;
-
     // hmm, wait a second.
     if (in && !in->is_head() && in->is_auth() &&
 	lock->get_state() == LOCK_SNAP_SYNC) {
@@ -1270,6 +1255,9 @@ bool Locker::rdlock_start(SimpleLock *lock, MDRequestRef& mut, bool as_anon)
 	// oh, check our lock again then
       }
     }
+
+    if (!_rdlock_kick(lock, as_anon))
+      break;
   }
 
   // wait!
@@ -2536,7 +2524,7 @@ void Locker::handle_client_caps(MClientCaps *m)
 	      << " client." << client << " on " << *in << dendl;
 
       // this cap now follows a later snap (i.e. the one initiating this flush, or later)
-      cap->client_follows = MAX(follows, in->first) + 1;
+      cap->client_follows = MAX(snap, (snapid_t)(in->first + 1));
    
       // we can prepare the ack now, since this FLUSHEDSNAP is independent of any
       // other cap ops.  (except possibly duplicate FLUSHSNAP requests, but worst
@@ -2834,19 +2822,24 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
   old_inode_t *oi = 0;
   if (in->is_multiversion()) {
     oi = in->pick_old_inode(snap);
-    if (oi) {
-      dout(10) << " writing into old inode" << dendl;
-      if (xattrs)
-	px = &oi->xattrs;
-    }
   }
-  if (xattrs && !px)
-    px = new map<string,bufferptr>;
 
-  inode_t *pi = in->project_inode(px);
-  pi->version = in->pre_dirty();
-  if (oi)
+  inode_t *pi;
+  if (oi) {
+    dout(10) << " writing into old inode" << dendl;
+    pi = in->project_inode();
+    pi->version = in->pre_dirty();
+    if (snap > oi->first)
+      in->split_old_inode(snap);
     pi = &oi->inode;
+    if (xattrs)
+      px = &oi->xattrs;
+  } else {
+    if (xattrs)
+      px = new map<string,bufferptr>;
+    pi = in->project_inode(px);
+    pi->version = in->pre_dirty();
+  }
 
   _update_cap_fields(in, dirty, m, pi);
 
@@ -2860,7 +2853,7 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
   }
 
   if (pi->client_ranges.count(client)) {
-    if (in->last == follows+1) {
+    if (in->last == snap) {
       dout(10) << "  removing client_range entirely" << dendl;
       pi->client_ranges.erase(client);
     } else {

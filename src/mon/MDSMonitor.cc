@@ -48,6 +48,30 @@ static ostream& _prefix(std::ostream *_dout, Monitor *mon, MDSMap const& mdsmap)
 }
 
 
+/*
+ * Specialized implementation of cmd_getval to allow us to parse
+ * out strongly-typedef'd types
+ */
+template<> bool cmd_getval(CephContext *cct, const cmdmap_t& cmdmap,
+                std::string k, mds_gid_t &val)
+{
+  return cmd_getval(cct, cmdmap, k, (int64_t&)val);
+}
+
+template<> bool cmd_getval(CephContext *cct, const cmdmap_t& cmdmap,
+                std::string k, mds_rank_t &val)
+{
+  return cmd_getval(cct, cmdmap, k, (int64_t&)val);
+}
+
+template<> bool cmd_getval(CephContext *cct, const cmdmap_t& cmdmap,
+                std::string k, MDSMap::DaemonState &val)
+{
+  return cmd_getval(cct, cmdmap, k, (int64_t&)val);
+}
+
+
+
 
 // my methods
 
@@ -468,6 +492,14 @@ bool MDSMonitor::prepare_beacon(MMDSBeacon *m)
   } else {
     // state change
     MDSMap::mds_info_t& info = pending_mdsmap.get_info_gid(gid);
+
+    if (info.state == MDSMap::STATE_STOPPING && state != MDSMap::STATE_STOPPED ) {
+      // we can't transition to any other states from STOPPING
+      dout(0) << "got beacon for MDS in STATE_STOPPING, ignoring requested state change"
+	       << dendl;
+      _note_beacon(m);
+      return true;
+    }
 
     if (info.laggy()) {
       dout(10) << "prepare_beacon clearing laggy flag on " << addr << dendl;
@@ -1296,13 +1328,12 @@ int MDSMonitor::filesystem_command(
       r = -EEXIST;
       ss << "mds." << who << " not active (" 
 	 << ceph_mds_state_name(pending_mdsmap.get_state(who)) << ")";
-    } else if ((pending_mdsmap.get_root() == who ||
-		pending_mdsmap.get_tableserver() == who) &&
-	       pending_mdsmap.get_num_in_mds() > 1) {
-      r = -EBUSY;
+    } else if (pending_mdsmap.get_root() == who ||
+		pending_mdsmap.get_tableserver() == who) {
+      r = -EINVAL;
       ss << "can't tell the root (" << pending_mdsmap.get_root()
 	 << ") or tableserver (" << pending_mdsmap.get_tableserver()
-	 << " to deactivate unless it is the last mds in the cluster";
+	 << ") to deactivate";
     } else if (pending_mdsmap.get_num_in_mds() <= size_t(pending_mdsmap.get_max_mds())) {
       r = -EBUSY;
       ss << "must decrease max_mds or else MDS will immediately reactivate";
@@ -1417,7 +1448,7 @@ int MDSMonitor::filesystem_command(
          << cmd_vartype_stringify(cmdmap["gid"]) << "'";
       return -EINVAL;
     }
-    int32_t state;
+    MDSMap::DaemonState state;
     if (!cmd_getval(g_ceph_context, cmdmap, "state", state)) {
       ss << "error parsing 'state' string value '"
          << cmd_vartype_stringify(cmdmap["state"]) << "'";
@@ -1425,7 +1456,7 @@ int MDSMonitor::filesystem_command(
     }
     if (!pending_mdsmap.is_dne_gid(gid)) {
       MDSMap::mds_info_t& info = pending_mdsmap.get_info_gid(gid);
-      info.state = MDSMap::DaemonState(state);
+      info.state = state;
       stringstream ss;
       ss << "set mds gid " << gid << " to state " << state << " " << ceph_mds_state_name(state);
       return 0;
@@ -1462,13 +1493,12 @@ int MDSMonitor::filesystem_command(
       return 0;
     }
   } else if (prefix == "mds rmfailed") {
-    int w_i;
-    if (!cmd_getval(g_ceph_context, cmdmap, "who", w_i)) {
+    mds_rank_t who;
+    if (!cmd_getval(g_ceph_context, cmdmap, "who", who)) {
       ss << "error parsing 'who' value '"
          << cmd_vartype_stringify(cmdmap["who"]) << "'";
       return -EINVAL;
     }
-    mds_rank_t who = mds_rank_t(w_i);
     pending_mdsmap.failed.erase(who);
     stringstream ss;
     ss << "removed failed mds." << who;

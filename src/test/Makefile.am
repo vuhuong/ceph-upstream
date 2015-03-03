@@ -60,6 +60,7 @@ ceph_dencoder_SOURCES = \
 	test/encoding/ceph_dencoder.cc \
 	$(DENCODER_SOURCES)
 ceph_dencoder_LDADD = \
+	$(LIBRBD_TYPES) \
 	$(LIBOSD_TYPES) \
 	$(LIBOS_TYPES) \
 	$(LIBMDS) \
@@ -251,6 +252,7 @@ check_SCRIPTS += \
 	test/mon/osd-crush.sh \
 	test/mon/osd-erasure-code-profile.sh \
 	test/mon/mkfs.sh \
+	test/osd/osd-scrub-repair.sh \
 	test/osd/osd-config.sh \
 	test/osd/osd-bench.sh \
 	test/osd/osd-copy-from.sh \
@@ -263,12 +265,18 @@ check_SCRIPTS += test/ceph-disk.sh
 endif
 
 EXTRA_DIST += \
-	$(srcdir)/test/ubuntu/Dockerfile.in \
-	$(srcdir)/test/ubuntu/install-deps.sh \
-	$(srcdir)/test/ubuntu/debian \
-	$(srcdir)/test/centos/Dockerfile.in \
-	$(srcdir)/test/centos/install-deps.sh \
-	$(srcdir)/test/centos/ceph.spec.in \
+	$(srcdir)/test/ubuntu-12.04/Dockerfile.in \
+	$(srcdir)/test/ubuntu-12.04/install-deps.sh \
+	$(srcdir)/test/ubuntu-12.04/debian \
+	$(srcdir)/test/ubuntu-14.04/Dockerfile.in \
+	$(srcdir)/test/ubuntu-14.04/install-deps.sh \
+	$(srcdir)/test/ubuntu-14.04/debian \
+	$(srcdir)/test/centos-6/Dockerfile.in \
+	$(srcdir)/test/centos-6/install-deps.sh \
+	$(srcdir)/test/centos-6/ceph.spec.in \
+	$(srcdir)/test/centos-7/Dockerfile.in \
+	$(srcdir)/test/centos-7/install-deps.sh \
+	$(srcdir)/test/centos-7/ceph.spec.in \
 	$(srcdir)/test/mon/mon-test-helpers.sh \
 	$(srcdir)/test/osd/osd-test-helpers.sh \
         $(srcdir)/test/coverage.sh \
@@ -669,6 +677,11 @@ unittest_tableformatter_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 unittest_tableformatter_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL)
 check_PROGRAMS += unittest_tableformatter
 
+unittest_bit_vector_SOURCES = test/common/test_bit_vector.cc
+unittest_bit_vector_CXXFLAGS = $(UNITTEST_CXXFLAGS)
+unittest_bit_vector_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL)
+check_PROGRAMS += unittest_bit_vector
+
 check_SCRIPTS += test/pybind/test_ceph_argparse.py
 
 if WITH_RADOSGW
@@ -769,7 +782,7 @@ noinst_LTLIBRARIES += librbd_test.la
 unittest_librbd_SOURCES =
 nodist_EXTRA_unittest_librbd_SOURCES = dummy.cc
 unittest_librbd_LDADD = \
-	librbd_test.la librbd_api.la librbd_internal.la \
+	librbd_test.la librbd_api.la librbd_internal.la $(LIBRBD_TYPES) \
 	libcls_rbd_client.la libcls_lock_client.la \
 	librados_test_stub.la librados_internal.la \
 	$(LIBOSDC) $(UNITTEST_LDADD) \
@@ -779,7 +792,7 @@ check_PROGRAMS += unittest_librbd
 ceph_test_librbd_SOURCES =
 nodist_EXTRA_ceph_test_librbd_SOURCES = dummy.cc
 ceph_test_librbd_LDADD = \
-	librbd_test.la librbd_api.la librbd_internal.la \
+	librbd_test.la librbd_api.la librbd_internal.la $(LIBRBD_TYPES) \
         libcls_rbd_client.la libcls_lock_client.la \
 	librados_api.la $(LIBRADOS_DEPS) $(UNITTEST_LDADD) \
 	$(CEPH_GLOBAL) $(RADOS_TEST_LDADD)

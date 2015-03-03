@@ -2,29 +2,31 @@
 // vim: ts=8 sw=2 smarttab
 #include "librbd/AsyncObjectThrottle.h"
 #include "include/rbd/librbd.hpp"
+#include "librbd/AsyncRequest.h"
 
 namespace librbd
 {
 
-AsyncObjectThrottle::AsyncObjectThrottle(const ContextFactory& context_factory,
+AsyncObjectThrottle::AsyncObjectThrottle(const AsyncRequest& async_request,
+                                         const ContextFactory& context_factory,
 				 	 Context *ctx, ProgressContext &prog_ctx,
 					 uint64_t object_no,
 					 uint64_t end_object_no)
   : m_lock("librbd::AsyncThrottle::m_lock"),
-    m_context_factory(context_factory), m_ctx(ctx), m_prog_ctx(prog_ctx),
-    m_object_no(object_no), m_end_object_no(end_object_no), m_current_ops(0),
-    m_ret(0)
+    m_async_request(async_request), m_context_factory(context_factory),
+    m_ctx(ctx), m_prog_ctx(prog_ctx), m_object_no(object_no),
+    m_end_object_no(end_object_no), m_current_ops(0), m_ret(0)
 {
 }
 
-int AsyncObjectThrottle::start_ops(uint64_t max_concurrent) {
+void AsyncObjectThrottle::start_ops(uint64_t max_concurrent) {
   bool complete;
   {
     Mutex::Locker l(m_lock);
     for (uint64_t i = 0; i < max_concurrent; ++i) {
-      int r = start_next_op();
-      if (r < 0 && m_current_ops == 0) {
-        return r;
+      start_next_op();
+      if (m_ret < 0 && m_current_ops == 0) {
+	break;
       }
     }
     complete = (m_current_ops == 0);
@@ -33,7 +35,6 @@ int AsyncObjectThrottle::start_ops(uint64_t max_concurrent) {
     m_ctx->complete(m_ret);
     delete this;
   }
-  return 0;
 }
 
 void AsyncObjectThrottle::finish_op(int r) {
@@ -54,11 +55,15 @@ void AsyncObjectThrottle::finish_op(int r) {
   }
 }
 
-int AsyncObjectThrottle::start_next_op() {
+void AsyncObjectThrottle::start_next_op() {
   bool done = false;
   while (!done) {
-    if (m_ret != 0 || m_object_no >= m_end_object_no) {
-      return m_ret;
+    if (m_async_request.is_canceled() && m_ret == 0) {
+      // allow in-flight ops to complete, but don't start new ops
+      m_ret = -ERESTART;
+      return;
+    } else if (m_ret != 0 || m_object_no >= m_end_object_no) {
+      return;
     }
 
     uint64_t ono = m_object_no++;
@@ -68,7 +73,7 @@ int AsyncObjectThrottle::start_next_op() {
     if (r < 0) {
       m_ret = r;
       delete ctx;
-      return m_ret;
+      return;
     } else if (r > 0) {
       // op completed immediately
       delete ctx;
@@ -78,7 +83,6 @@ int AsyncObjectThrottle::start_next_op() {
     }
     m_prog_ctx.update_progress(ono, m_end_object_no);
   }
-  return 0;
 }
 
 } // namespace librbd

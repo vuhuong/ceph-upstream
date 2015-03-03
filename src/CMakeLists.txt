@@ -174,6 +174,7 @@ set(libcommon_files
   common/TrackedOp.cc
   common/SloppyCRCMap.cc
   common/types.cc
+  common/TextTable.cc
   log/Log.cc
   log/SubsystemMap.cc
   mon/MonCap.cc
@@ -416,6 +417,7 @@ set(libos_srcs
   os/GenericFileStoreBackend.cc
   os/BtrfsFileStoreBackend.cc
   os/ZFSFileStoreBackend.cc
+  os/XfsFileStoreBackend.cc
   os/KeyValueStore.cc
   os/KeyValueDB.cc
   os/MemStore.cc
@@ -643,14 +645,24 @@ endif(WITH_LIBCEPHFS)
 
 if(${WITH_RBD})
   set(librbd_srcs
-    librbd/librbd.cc
     krbd.cc
+    common/ContextCompletion.cc
     librbd/AioCompletion.cc
     librbd/AioRequest.cc
+    librbd/AsyncFlattenRequest.cc
+    librbd/AsyncObjectThrottle.cc
+    librbd/AsyncOperation.cc
+    librbd/AsyncRequest.cc
+    librbd/AsyncResizeRequest.cc
+    librbd/AsyncTrimRequest.cc
+    librbd/CopyupRequest.cc
     librbd/ImageCtx.cc
+    librbd/ImageWatcher.cc
+    librbd/WatchNotifyTypes.cc
     librbd/internal.cc
+    librbd/librbd.cc
     librbd/LibrbdWriteback.cc
-    librbd/ImageWatcher.cc)
+    librbd/ObjectMap.cc)
   add_library(librbd ${CEPH_SHARED} ${librbd_srcs}
     $<TARGET_OBJECTS:osdc_rbd_objs>
     $<TARGET_OBJECTS:common_util_obj>)
@@ -727,31 +739,6 @@ if(${WITH_RADOSGW})
   include_directories("${CMAKE_SOURCE_DIR}/src/civetweb/include")
 
   set(radosgw_srcs
-    rgw/rgw_civetweb.cc
-    rgw/rgw_resolve.cc
-    rgw/rgw_rest.cc
-    rgw/rgw_rest_swift.cc
-    rgw/rgw_rest_s3.cc
-    rgw/rgw_rest_usage.cc
-    rgw/rgw_rest_user.cc
-    rgw/rgw_rest_bucket.cc
-    rgw/rgw_http_client.cc
-    rgw/rgw_swift.cc
-    rgw/rgw_swift_auth.cc
-    rgw/rgw_main.cc
-    rgw/rgw_keystone.cc
-    rgw/rgw_loadgen.cc
-    rgw/rgw_rest_client.cc
-    rgw/rgw_metadata.cc
-    rgw/rgw_rest_config.cc
-    rgw/rgw_rest_conn.cc
-    rgw/rgw_rest_log.cc
-    rgw/rgw_rest_metadata.cc
-    rgw/rgw_rest_opstate.cc
-    rgw/rgw_rest_replica_log.cc
-    ${kvs_srcs})
-
-  set(radosgw_srcs
     rgw/rgw_resolve.cc
     rgw/rgw_rest.cc
     rgw/rgw_rest_swift.cc
@@ -774,6 +761,9 @@ if(${WITH_RADOSGW})
     civetweb/src/civetweb.c
     rgw/rgw_main.cc)
 
+  set(radosgw_admin_srcs
+    rgw/rgw_admin.cc)
+
   add_executable(radosgw ${radosgw_srcs} $<TARGET_OBJECTS:heap_profiler_objs>)
   target_link_libraries(radosgw rgw_a librados
     cls_rgw_client cls_lock_client cls_refcount_client
@@ -781,4 +771,12 @@ if(${WITH_RADOSGW})
     cls_replica_log_client cls_user_client
     curl expat global fcgi resolv ${TCMALLOC_LIBS})
   install(TARGETS radosgw DESTINATION bin)
+
+  add_executable(radosgw-admin ${radosgw_admin_srcs} $<TARGET_OBJECTS:heap_profiler_objs>)
+  target_link_libraries(radosgw-admin rgw_a librados
+    cls_rgw_client cls_lock_client cls_refcount_client
+    cls_log_client cls_statelog_client cls_version_client
+    cls_replica_log_client cls_user_client
+    curl expat global fcgi resolv ${TCMALLOC_LIBS})
+  install(TARGETS radosgw-admin DESTINATION bin)
 endif(${WITH_RADOSGW})

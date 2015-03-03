@@ -8,7 +8,7 @@ AC_PREREQ(2.59)
 # VERSION define is not used by the code.  It gets a version string
 # from 'git describe'; see src/ceph_ver.[ch]
 
-AC_INIT([ceph], [0.91], [ceph-devel@vger.kernel.org])
+AC_INIT([ceph], [0.93], [ceph-devel@vger.kernel.org])
 
 # Create release string.  Used with VERSION for RPMs.
 RPM_RELEASE=0
@@ -535,9 +535,9 @@ AM_CONDITIONAL(ENABLE_XIO, [test "x$enable_xio" = "xyes"])
 
 if test "x$enable_xio" = x"yes"; then
    AC_CHECK_HEADER([libxio.h], [], AC_MSG_ERROR([Cannot find header 'libxio.h'.]))
-   AC_CHECK_LIB([xio], [xio_init], [], AC_MSG_FAILURE([Accelio not found]))
-   AC_CHECK_LIB([ibverbs], [ibv_query_device], [], AC_MSG_FAILURE([OFED not found]))
-   AC_CHECK_LIB([rdmacm], [rdma_connect], [], AC_MSG_FAILURE([OFED not found]))
+   AC_CHECK_LIB([xio], [xio_init], [], AC_MSG_FAILURE([Accelio libxio not found]))
+   AC_CHECK_LIB([ibverbs], [ibv_query_device], [], AC_MSG_FAILURE([libibverbs not found]))
+   AC_CHECK_LIB([rdmacm], [rdma_connect], [], AC_MSG_FAILURE([librdmacm not found]))
 
    # Also require boost-regex, used in address_helper
    AC_CHECK_LIB(boost_regex, main, [],

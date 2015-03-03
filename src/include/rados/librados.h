@@ -74,12 +74,12 @@ enum {
   LIBRADOS_OP_FLAG_FADVISE_RANDOM     = 0x4,
   // indicate read/write op sequential
   LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL = 0x8,
-  // indicate read/write data will be accessed in the near future
+  // indicate read/write data will be accessed in the near future (by someone)
   LIBRADOS_OP_FLAG_FADVISE_WILLNEED   = 0x10,
-  // indicate read/write data will not accessed int the near future
+  // indicate read/write data will not accessed in the near future (by anyone)
   LIBRADOS_OP_FLAG_FADVISE_DONTNEED   = 0x20,
-  // indicate read/write data will not accessed just once by this client
-  LIBRADOS_OP_FLAG_FADVISE_NOREUSE   = 0x40,
+  // indicate read/write data will not accessed again (by *this* client)
+  LIBRADOS_OP_FLAG_FADVISE_NOCACHE    = 0x40,
 };
 
 #if __GNUC__ >= 4
@@ -109,7 +109,7 @@ enum {
 /** @} */
 
 /**
- * @defgroup librados_h_operation_flags
+ * @defgroup librados_h_operation_flags Operation Flags
  * Flags for rados_read_op_opeprate(), rados_write_op_operate(),
  * rados_aio_read_op_operate(), and rados_aio_write_op_operate().
  * See librados.hpp for details.
@@ -261,6 +261,8 @@ struct rados_cluster_stat_t {
  * - Object map key/value pairs: rados_write_op_omap_set(),
  *   rados_write_op_omap_rm_keys(), rados_write_op_omap_clear(),
  *   rados_write_op_omap_cmp()
+ * - Object properties: rados_write_op_assert_exists(),
+ *   rados_write_op_assert_version()
  * - Creating objects: rados_write_op_create()
  * - IO on objects: rados_write_op_append(), rados_write_op_write(), rados_write_op_zero
  *   rados_write_op_write_full(), rados_write_op_remove, rados_write_op_truncate(),
@@ -281,7 +283,8 @@ typedef void *rados_write_op_t;
  * - Object map key/value pairs: rados_read_op_omap_get_vals(),
  *   rados_read_op_omap_get_keys(), rados_read_op_omap_get_vals_by_keys(),
  *   rados_read_op_omap_cmp()
- * - Object properties: rados_read_op_stat(), rados_read_op_assert_exists()
+ * - Object properties: rados_read_op_stat(), rados_read_op_assert_exists(),
+ *   rados_read_op_assert_version()
  * - IO on objects: rados_read_op_read()
  * - Custom operations: rados_read_op_exec(), rados_read_op_exec_user_buf()
  * - Request properties: rados_read_op_set_flags()
@@ -346,7 +349,7 @@ CEPH_RADOS_API int rados_create2(rados_t *pcluster,
  * Share configuration state with another rados_t instance.
  *
  * @param cluster where to store the handle
- * @param cct_ the existing configuration to use
+ * @param cct the existing configuration to use
  * @returns 0 on success, negative error code on failure
  */
 CEPH_RADOS_API int rados_create_with_context(rados_t *cluster,
@@ -663,7 +666,7 @@ CEPH_RADOS_API rados_config_t rados_ioctx_cct(rados_ioctx_t io);
 /**
  * Get the cluster handle used by this rados_ioctx_t
  * Note that this is a weak reference, and should not
- * be destroyed via rados_destroy().
+ * be destroyed via rados_shutdown().
  *
  * @param io the io context
  * @returns the cluster handle for this io context
@@ -1982,7 +1985,7 @@ CEPH_RADOS_API int rados_watch(rados_ioctx_t io, const char *o, uint64_t ver,
  * @param io the pool the object is in
  * @param o the object to watch
  * @param cookie where to store the internal id assigned to this watch
- * @param watchcb2 what to do when a notify is received on this object
+ * @param watchcb what to do when a notify is received on this object
  * @param watcherrcb what to do when the watch session encounters an error
  * @param arg opaque value to pass to the callback
  * @returns 0 on success, negative error code on failure
@@ -2205,6 +2208,21 @@ CEPH_RADOS_API void rados_write_op_set_flags(rados_write_op_t write_op,
 CEPH_RADOS_API void rados_write_op_assert_exists(rados_write_op_t write_op);
 
 /**
+ * Ensure that the object exists and that its internal version
+ * number is equal to "ver" before writing. "ver" should be a
+ * version number previously obtained with rados_get_last_version().
+ * - If the object's version is greater than the asserted version
+ *   then rados_write_op_operate will return -ERANGE instead of
+ *   executing the op.
+ * - If the object's version is less than the asserted version
+ *   then rados_write_op_operate will return -EOVERFLOW instead
+ *   of executing the op.
+ * @param write_op operation to add this action to
+ * @param ver object version number
+ */
+CEPH_RADOS_API void rados_write_op_assert_version(rados_write_op_t write_op, uint64_t ver);
+
+/**
  * Ensure that given xattr satisfies comparison.
  * If the comparison is not satisfied, the return code of the
  * operation will be -ECANCELED
@@ -2313,7 +2331,7 @@ CEPH_RADOS_API void rados_write_op_remove(rados_write_op_t write_op);
 /**
  * Truncate an object
  * @param write_op operation to add this action to
- * @offset Offset to truncate to
+ * @param offset Offset to truncate to
  */
 CEPH_RADOS_API void rados_write_op_truncate(rados_write_op_t write_op,
                                             uint64_t offset);
@@ -2321,8 +2339,8 @@ CEPH_RADOS_API void rados_write_op_truncate(rados_write_op_t write_op,
 /**
  * Zero part of an object
  * @param write_op operation to add this action to
- * @offset Offset to zero
- * @len length to zero
+ * @param offset Offset to zero
+ * @param len length to zero
  */
 CEPH_RADOS_API void rados_write_op_zero(rados_write_op_t write_op,
 			                uint64_t offset,
@@ -2449,6 +2467,21 @@ CEPH_RADOS_API void rados_read_op_set_flags(rados_read_op_t read_op, int flags);
 CEPH_RADOS_API void rados_read_op_assert_exists(rados_read_op_t read_op);
 
 /**
+ * Ensure that the object exists and that its internal version
+ * number is equal to "ver" before reading. "ver" should be a
+ * version number previously obtained with rados_get_last_version().
+ * - If the object's version is greater than the asserted version
+ *   then rados_read_op_operate will return -ERANGE instead of
+ *   executing the op.
+ * - If the object's version is less than the asserted version
+ *   then rados_read_op_operate will return -EOVERFLOW instead
+ *   of executing the op.
+ * @param read_op operation to add this action to
+ * @param ver object version number
+ */
+CEPH_RADOS_API void rados_read_op_assert_version(rados_read_op_t read_op, uint64_t ver);
+
+/**
  * Ensure that the an xattr satisfies a comparison
  * If the comparison is not satisfied, the return code of the
  * operation will be -ECANCELED
@@ -2517,15 +2550,15 @@ CEPH_RADOS_API void rados_read_op_stat(rados_read_op_t read_op,
  *
  * @param read_op operation to add this action to
  * @param offset offset to read from
- * @param buffer where to put the data
  * @param len length of buffer
- * @param prval where to store the return value of this action
+ * @param buffer where to put the data
  * @param bytes_read where to store the number of bytes read by this action
+ * @param prval where to store the return value of this action
  */
 CEPH_RADOS_API void rados_read_op_read(rados_read_op_t read_op,
 			               uint64_t offset,
 			               size_t len,
-			               char *buf,
+			               char *buffer,
 			               size_t *bytes_read,
 			               int *prval);
 
@@ -2591,7 +2624,7 @@ CEPH_RADOS_API void rados_read_op_exec_user_buf(rados_read_op_t read_op,
  * @param read_op operation to add this action to
  * @param start_after list keys starting after start_after
  * @param filter_prefix list only keys beginning with filter_prefix
- * @parem max_return list no more than max_return key/value pairs
+ * @param max_return list no more than max_return key/value pairs
  * @param iter where to store the iterator
  * @param prval where to store the return value from this action
  */
@@ -2610,7 +2643,7 @@ CEPH_RADOS_API void rados_read_op_omap_get_vals(rados_read_op_t read_op,
  *
  * @param read_op operation to add this action to
  * @param start_after list keys starting after start_after
- * @parem max_return list no more than max_return keys
+ * @param max_return list no more than max_return keys
  * @param iter where to store the iterator
  * @param prval where to store the return value from this action
  */
@@ -2640,9 +2673,9 @@ CEPH_RADOS_API void rados_read_op_omap_get_vals_by_keys(rados_read_op_t read_op,
 /**
  * Perform a read operation synchronously
  * @param read_op operation to perform
- * @io the ioctx that the object is in
- * @oid the object id
- * @flags flags to apply to the entire operation (LIBRADOS_OPERATION_*)
+ * @param io the ioctx that the object is in
+ * @param oid the object id
+ * @param flags flags to apply to the entire operation (LIBRADOS_OPERATION_*)
  */
 CEPH_RADOS_API int rados_read_op_operate(rados_read_op_t read_op,
 			                 rados_ioctx_t io,
@@ -2652,10 +2685,10 @@ CEPH_RADOS_API int rados_read_op_operate(rados_read_op_t read_op,
 /**
  * Perform a read operation asynchronously
  * @param read_op operation to perform
- * @io the ioctx that the object is in
+ * @param io the ioctx that the object is in
  * @param completion what to do when operation has been attempted
- * @oid the object id
- * @flags flags to apply to the entire operation (LIBRADOS_OPERATION_*)
+ * @param oid the object id
+ * @param flags flags to apply to the entire operation (LIBRADOS_OPERATION_*)
  */
 CEPH_RADOS_API int rados_aio_read_op_operate(rados_read_op_t read_op,
 			                     rados_ioctx_t io,
@@ -2679,7 +2712,7 @@ CEPH_RADOS_API int rados_aio_read_op_operate(rados_read_op_t read_op,
  * @returns -EBUSY if the lock is already held by another (client, cookie) pair
  * @returns -EEXIST if the lock is already held by the same (client, cookie) pair
  */
-CEPH_RADOS_API int rados_lock_exclusive(rados_ioctx_t io, const char * o,
+CEPH_RADOS_API int rados_lock_exclusive(rados_ioctx_t io, const char * oid,
                                         const char * name, const char * cookie,
                                         const char * desc,
                                         struct timeval * duration,
@@ -2764,6 +2797,19 @@ CEPH_RADOS_API ssize_t rados_list_lockers(rados_ioctx_t io, const char *o,
 CEPH_RADOS_API int rados_break_lock(rados_ioctx_t io, const char *o,
                                     const char *name, const char *client,
                                     const char *cookie);
+
+/**
+ * Blacklists the specified client from the OSDs
+ *
+ * @param cluster cluster handle
+ * @param client_address client address
+ * @param expire_seconds number of seconds to blacklist (0 for default)
+ * @returns 0 on success, negative error code on failure
+ */
+CEPH_RADOS_API int rados_blacklist_add(rados_t cluster,
+				       char *client_address,
+				       uint32_t expire_seconds);
+
 /**
  * @defgroup librados_h_commands Mon/OSD/PG Commands
  *
@@ -2864,7 +2910,8 @@ CEPH_RADOS_API int rados_pg_command(rados_t cluster, const char *pgstr,
  *
  * @param cluster cluster handle
  * @param level minimum log level (debug, info, warn|warning, err|error)
- * @param cb callback to run for each log message
+ * @param cb callback to run for each log message. It MUST NOT block
+ * nor call back into librados.
  * @param arg void argument to pass to cb
  *
  * @returns 0 on success, negative code on error

@@ -13,7 +13,7 @@
  */
 
 #include <boost/variant.hpp>
-#include <boost/optional.hpp>
+#include <boost/optional/optional_io.hpp>
 #include <iostream>
 #include <sstream>
 
@@ -805,7 +805,6 @@ void ECBackend::handle_sub_write(
 {
   if (msg)
     msg->mark_started();
-  assert(!get_parent()->get_log().get_missing().is_missing(op.soid));
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction *localt = new ObjectStore::Transaction;
@@ -1156,10 +1155,10 @@ void ECBackend::on_change()
   }
   in_progress_client_reads.clear();
   shard_to_read_map.clear();
-  clear_state();
+  clear_recovery_state();
 }
 
-void ECBackend::clear_state()
+void ECBackend::clear_recovery_state()
 {
   recovery_ops.clear();
 }
@@ -1222,7 +1221,7 @@ void ECBackend::submit_transaction(
   PGTransaction *_t,
   const eversion_t &trim_to,
   const eversion_t &trim_rollback_to,
-  vector<pg_log_entry_t> &log_entries,
+  const vector<pg_log_entry_t> &log_entries,
   boost::optional<pg_hit_set_history_t> &hset_history,
   Context *on_local_applied_sync,
   Context *on_all_applied,
@@ -1238,7 +1237,7 @@ void ECBackend::submit_transaction(
   op->version = at_version;
   op->trim_to = trim_to;
   op->trim_rollback_to = trim_rollback_to;
-  op->log_entries.swap(log_entries);
+  op->log_entries = log_entries;
   std::swap(op->updated_hit_set_history, hset_history);
   op->on_local_applied_sync = on_local_applied_sync;
   op->on_all_applied = on_all_applied;
@@ -1519,6 +1518,9 @@ void ECBackend::start_write(Op *op) {
     trans[i->shard];
     trans[i->shard].set_use_tbl(parent->transaction_use_tbl());
   }
+  ObjectStore::Transaction empty;
+  empty.set_use_tbl(parent->transaction_use_tbl());
+
   op->t->generate_transactions(
     op->unstable_hash_infos,
     ec_impl,
@@ -1540,6 +1542,13 @@ void ECBackend::start_write(Op *op) {
       trans.find(i->shard);
     assert(iter != trans.end());
     bool should_send = get_parent()->should_send_op(*i, op->hoid);
+    if (should_send) {
+      dout(10) << __func__ << ": sending transaction for object "
+	       << op->hoid << " to shard " << *i << dendl;
+    } else {
+      dout(10) << __func__ << ": NOT sending transaction for object "
+	       << op->hoid << " to shard " << *i << dendl;
+    }
     pg_stat_t stats =
       should_send ?
       get_info().stats :
@@ -1551,7 +1560,7 @@ void ECBackend::start_write(Op *op) {
       op->reqid,
       op->hoid,
       stats,
-      should_send ? iter->second : ObjectStore::Transaction(),
+      should_send ? iter->second : empty,
       op->version,
       op->trim_to,
       op->trim_rollback_to,

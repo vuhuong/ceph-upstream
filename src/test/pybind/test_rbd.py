@@ -1,6 +1,5 @@
 # vim: expandtab smarttab shiftwidth=4 softtabstop=4
 import functools
-import random
 import socket
 import struct
 import os
@@ -8,7 +7,10 @@ import os
 from contextlib import nested
 from nose import with_setup, SkipTest
 from nose.tools import eq_ as eq, assert_raises
-from rados import Rados
+from rados import (Rados,
+                   LIBRADOS_OP_FLAG_FADVISE_DONTNEED,
+                   LIBRADOS_OP_FLAG_FADVISE_NOCACHE,
+                   LIBRADOS_OP_FLAG_FADVISE_RANDOM)
 from rbd import (RBD, Image, ImageNotFound, InvalidArgument, ImageExists,
                  ImageBusy, ImageHasSnapshots, ReadOnlyImage,
                  FunctionNotSupported, ArgumentOutOfRange,
@@ -135,7 +137,7 @@ def check_default_params(format, order=None, features=None, stripe_count=None,
 
                     expected_features = features
                     if expected_features is None or format == 1:
-                        expected_features = 0 if format == 1 else 7
+                        expected_features = 0 if format == 1 else 3
                     eq(expected_features, image.features())
 
                     expected_stripe_count = stripe_count
@@ -261,8 +263,7 @@ def test_rename():
     eq([image_name], rbd.list(ioctx))
 
 def rand_data(size):
-    l = [random.Random().getrandbits(64) for _ in xrange(size/8)]
-    return struct.pack((size/8)*'Q', *l)
+    return os.urandom(size)
 
 def check_stat(info, size, order):
     assert 'block_name_prefix' in info
@@ -292,12 +293,27 @@ class TestImage(object):
         info = self.image.stat()
         check_stat(info, IMG_SIZE, IMG_ORDER)
 
+    def test_flags(self):
+        flags = self.image.flags()
+        eq(0, flags)
+
     def test_write(self):
         data = rand_data(256)
         self.image.write(data, 0)
 
+    def test_write_with_fadvise_flags(self):
+        data = rand_data(256)
+        self.image.write(data, 0, LIBRADOS_OP_FLAG_FADVISE_DONTNEED)
+        self.image.write(data, 0, LIBRADOS_OP_FLAG_FADVISE_NOCACHE)
+
     def test_read(self):
         data = self.image.read(0, 20)
+        eq(data, '\0' * 20)
+
+    def test_read_with_fadvise_flags(self):
+        data = self.image.read(0, 20, LIBRADOS_OP_FLAG_FADVISE_DONTNEED)
+        eq(data, '\0' * 20)
+        data = self.image.read(0, 20, LIBRADOS_OP_FLAG_FADVISE_RANDOM)
         eq(data, '\0' * 20)
 
     def test_large_write(self):
@@ -741,6 +757,7 @@ class TestClone(object):
 
     def test_resize_io(self):
         parent_data = self.image.read(IMG_SIZE / 2, 256)
+        self.image.resize(0)
         self.clone.resize(IMG_SIZE / 2 + 128)
         child_data = self.clone.read(IMG_SIZE / 2, 128)
         eq(child_data, parent_data[:128])
@@ -1029,5 +1046,5 @@ class TestExclusiveLock(object):
             eq(image1.is_exclusive_lock_owner(), False)
             eq(image2.is_exclusive_lock_owner(), True)
             for offset in [0, IMG_SIZE / 2]:
-                read = image2.read(0, 256)
+                read = image2.read(offset, 256)
                 eq(data, read)

@@ -131,9 +131,13 @@ location. ::
 
 	ceph osd crush set {id} {weight} [{loc1} [{loc2} ...]]
 
-Remove an existing item from the CRUSH map. ::
+Remove an existing item (OSD) from the CRUSH map. ::
 
-	ceph osd crush remove {id}
+	ceph osd crush remove {name}
+
+Remove an existing bucket from the CRUSH map. ::
+
+	ceph osd crush remove {bucket-name}
 
 Move an existing bucket from one position in the hierarchy to another.  ::
 
@@ -282,7 +286,10 @@ Sends a repair command to OSD.N. To send the command to all OSDs, use ``*``. ::
 
 Runs a simple throughput benchmark against OSD.N, writing ``NUMBER_OF_OBJECTS``
 in write requests of ``BYTES_PER_WRITE`` each. By default, the test
-writes 1 GB in total in 4-MB increments. ::
+writes 1 GB in total in 4-MB increments.
+The benchmark is non-destructive and will not overwrite existing live
+OSD data, but might temporarily affect the performance of clients
+concurrently accessing the OSD. ::
 
 	ceph tell osd.N bench [NUMER_OF_OBJECTS] [BYTES_PER_WRITE]
 

@@ -123,6 +123,17 @@ Parameters
 
    Map the image read-only.  Equivalent to -o ro.
 
+.. option:: --image-features features
+
+   Specifies which RBD format 2 features are to be enabled when creating
+   an image. The numbers from the desired features below should be added
+   to compute the parameter value:
+
+   +1: layering support
+   +2: striping v2 support
+   +4: exclusive locking support
+   +8: object map support
+
 .. option:: --image-shared
 
    Specifies that the image will be used concurrently by multiple clients.
@@ -263,6 +274,9 @@ Commands
 :command:`showmapped`
   Show the rbd images that are mapped via the rbd kernel module.
 
+:command:`status` [*image-name*]
+  Show the status of the image, including which clients have it open.
+
 :command:`lock` list [*image-name*]
   Show locks held on the image. The first column is the locker
   to use with the `lock remove` command.
@@ -308,14 +322,17 @@ bottleneck when individual images get large or busy.
 The striping is controlled by three parameters:
 
 .. option:: order
+
   The size of objects we stripe over is a power of two, specifically 2^[*order*] bytes.  The default
   is 22, or 4 MB.
 
 .. option:: stripe_unit
+
   Each [*stripe_unit*] contiguous bytes are stored adjacently in the same object, before we move on
   to the next object.
 
 .. option:: stripe_count
+
   After we write [*stripe_unit*] bytes to [*stripe_count*] objects, we loop back to the initial object
   and write another stripe, until the object reaches its maximum size (as specified by [*order*].  At that
   point, we move on to the next [*stripe_count*] objects.

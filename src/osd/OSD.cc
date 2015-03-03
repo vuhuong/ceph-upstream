@@ -1501,13 +1501,13 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   osd_lock("OSD::osd_lock"),
   tick_timer(cct, osd_lock),
   authorize_handler_cluster_registry(new AuthAuthorizeHandlerRegistry(cct,
-								      cct->_conf->auth_supported.length() ?
-								      cct->_conf->auth_supported :
-								      cct->_conf->auth_cluster_required)),
+								      cct->_conf->auth_supported.empty() ?
+								      cct->_conf->auth_cluster_required :
+								      cct->_conf->auth_supported)),
   authorize_handler_service_registry(new AuthAuthorizeHandlerRegistry(cct,
-								      cct->_conf->auth_supported.length() ?
-								      cct->_conf->auth_supported :
-								      cct->_conf->auth_service_required)),
+								      cct->_conf->auth_supported.empty() ?
+								      cct->_conf->auth_service_required :
+								      cct->_conf->auth_supported)),
   cluster_messenger(internal_messenger),
   client_messenger(external_messenger),
   objecter_messenger(osdc_messenger),
@@ -2139,6 +2139,7 @@ void OSD::create_logger()
   osd_plb.add_u64_counter(l_osd_tier_dirty, "tier_dirty");
   osd_plb.add_u64_counter(l_osd_tier_clean, "tier_clean");
   osd_plb.add_u64_counter(l_osd_tier_delay, "tier_delay");
+  osd_plb.add_u64_counter(l_osd_tier_proxy_read, "tier_proxy_read");
 
   osd_plb.add_u64_counter(l_osd_agent_wake, "agent_wake");
   osd_plb.add_u64_counter(l_osd_agent_skip, "agent_skip");
@@ -2365,6 +2366,9 @@ int OSD::shutdown()
       if (p->second->ref.read() != 1) {
         derr << "pgid " << p->first << " has ref count of "
             << p->second->ref.read() << dendl;
+#ifdef PG_DEBUG_REFS
+	p->second->dump_live_ids();
+#endif
         assert(0);
       }
       p->second->unlock();
@@ -4413,7 +4417,8 @@ void OSD::_send_boot()
   }
 
   MOSDBoot *mboot = new MOSDBoot(superblock, service.get_boot_epoch(),
-                                 hb_back_addr, hb_front_addr, cluster_addr);
+                                 hb_back_addr, hb_front_addr, cluster_addr,
+				 CEPH_FEATURES_ALL);
   dout(10) << " client_addr " << client_messenger->get_myaddr()
 	   << ", cluster_addr " << cluster_addr
 	   << ", hb_back_addr " << hb_back_addr
@@ -7835,7 +7840,7 @@ void OSD::do_recovery(PG *pg, ThreadPool::TPHandle &handle)
     return;
   } else {
     pg->lock_suspend_timeout(handle);
-    if (pg->deleting || !(pg->is_active() && pg->is_primary())) {
+    if (pg->deleting || !(pg->is_peered() && pg->is_primary())) {
       pg->unlock();
       goto out;
     }

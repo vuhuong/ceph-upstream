@@ -170,8 +170,9 @@
 #define MSG_MON_HEALTH            0x601
 
 // *** Message::encode() crcflags bits ***
-#define MSG_CRC_DATA           1
-#define MSG_CRC_HEADER         2
+#define MSG_CRC_DATA           (1 << 0)
+#define MSG_CRC_HEADER         (1 << 1)
+#define MSG_CRC_ALL            (MSG_CRC_DATA | MSG_CRC_HEADER)
 
 // Xio Testing
 #define MSG_DATA_PING		  0x602
@@ -300,7 +301,7 @@ protected:
       completion_hook->complete(0);
   }
 public:
-  inline const ConnectionRef& get_connection() { return connection; }
+  inline const ConnectionRef& get_connection() const { return connection; }
   void set_connection(const ConnectionRef& c) {
     connection = c;
   }
@@ -312,15 +313,17 @@ public:
   Throttle *get_message_throttler() { return msg_throttler; }
 
   void set_dispatch_throttle_size(uint64_t s) { dispatch_throttle_size = s; }
-  uint64_t get_dispatch_throttle_size() { return dispatch_throttle_size; }
+  uint64_t get_dispatch_throttle_size() const { return dispatch_throttle_size; }
 
+  const ceph_msg_header &get_header() const { return header; }
   ceph_msg_header &get_header() { return header; }
   void set_header(const ceph_msg_header &e) { header = e; }
   void set_footer(const ceph_msg_footer &e) { footer = e; }
+  const ceph_msg_footer &get_footer() const { return footer; }
   ceph_msg_footer &get_footer() { return footer; }
   void set_src(const entity_name_t& src) { header.src = src; }
 
-  uint32_t get_magic() { return magic; }
+  uint32_t get_magic() const { return magic; }
   void set_magic(int _magic) { magic = _magic; }
 
   /*
@@ -345,7 +348,7 @@ public:
     clear_buffers(); // let subclass drop buffers as well
   }
 
-  bool empty_payload() { return payload.length() == 0; }
+  bool empty_payload() const { return payload.length() == 0; }
   bufferlist& get_payload() { return payload; }
   void set_payload(bufferlist& bl) {
     if (byte_throttler)

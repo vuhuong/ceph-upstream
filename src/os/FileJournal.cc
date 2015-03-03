@@ -830,7 +830,8 @@ int FileJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_
   }
 
   dout(20) << "prepare_multi_write queue_pos now " << queue_pos << dendl;
-  //assert(write_pos + bl.length() == queue_pos);
+  assert((write_pos + bl.length() == queue_pos) ||
+         (write_pos + bl.length() - header.max_size + get_top() == queue_pos));
   return 0;
 }
 
@@ -1030,22 +1031,32 @@ void FileJournal::do_write(bufferlist& bl)
     dout(10) << "do_write wrapping, first bit at " << pos << " len " << first.length()
 	     << " second bit len " << second.length() << " (orig len " << bl.length() << ")" << dendl;
 
-    if (write_bl(pos, first)) {
-      derr << "FileJournal::do_write: write_bl(pos=" << pos
-	   << ") failed" << dendl;
-      ceph_abort();
-    }
-    assert(pos == get_top());
+    //Save pos to write first piece second
+    off64_t first_pos = pos;
+    off64_t orig_pos;
+    pos = get_top();
+    // header too?
     if (hbp.length()) {
       // be sneaky: include the header in the second fragment
       second.push_front(hbp);
       pos = 0;          // we included the header
     }
+    // Write the second portion first possible with the header, so
+    // do_read_entry() won't even get a valid entry_header_t if there
+    // is a crash between the two writes.
+    orig_pos = pos;
     if (write_bl(pos, second)) {
-      derr << "FileJournal::do_write: write_bl(pos=" << pos
+      derr << "FileJournal::do_write: write_bl(pos=" << orig_pos
 	   << ") failed" << dendl;
       ceph_abort();
     }
+    orig_pos = first_pos;
+    if (write_bl(first_pos, first)) {
+      derr << "FileJournal::do_write: write_bl(pos=" << orig_pos
+	   << ") failed" << dendl;
+      ceph_abort();
+    }
+    assert(first_pos == get_top());
   } else {
     // header too?
     if (hbp.length()) {
@@ -1777,13 +1788,14 @@ bool FileJournal::read_entry(
 }
 
 FileJournal::read_entry_result FileJournal::do_read_entry(
-  off64_t pos,
+  off64_t init_pos,
   off64_t *next_pos,
   bufferlist *bl,
   uint64_t *seq,
   ostream *ss,
   entry_header_t *_h)
 {
+  off64_t cur_pos = init_pos;
   bufferlist _bl;
   if (!bl)
     bl = &_bl;
@@ -1792,40 +1804,40 @@ FileJournal::read_entry_result FileJournal::do_read_entry(
   entry_header_t *h;
   bufferlist hbl;
   off64_t _next_pos;
-  wrap_read_bl(pos, sizeof(*h), &hbl, &_next_pos);
+  wrap_read_bl(cur_pos, sizeof(*h), &hbl, &_next_pos);
   h = reinterpret_cast<entry_header_t *>(hbl.c_str());
 
-  if (!h->check_magic(pos, header.get_fsid64())) {
-    dout(25) << "read_entry " << pos
+  if (!h->check_magic(cur_pos, header.get_fsid64())) {
+    dout(25) << "read_entry " << init_pos
 	     << " : bad header magic, end of journal" << dendl;
     if (ss)
       *ss << "bad header magic";
     if (next_pos)
-      *next_pos = pos + (4<<10); // check 4k ahead
+      *next_pos = init_pos + (4<<10); // check 4k ahead
     return MAYBE_CORRUPT;
   }
-  pos = _next_pos;
+  cur_pos = _next_pos;
 
   // pad + body + pad
   if (h->pre_pad)
-    pos += h->pre_pad;
+    cur_pos += h->pre_pad;
 
   bl->clear();
-  wrap_read_bl(pos, h->len, bl, &pos);
+  wrap_read_bl(cur_pos, h->len, bl, &cur_pos);
 
   if (h->post_pad)
-    pos += h->post_pad;
+    cur_pos += h->post_pad;
 
   // footer
   entry_header_t *f;
   bufferlist fbl;
-  wrap_read_bl(pos, sizeof(*f), &fbl, &pos);
+  wrap_read_bl(cur_pos, sizeof(*f), &fbl, &cur_pos);
   f = reinterpret_cast<entry_header_t *>(fbl.c_str());
   if (memcmp(f, h, sizeof(*f))) {
     if (ss)
       *ss << "bad footer magic, partial entry";
     if (next_pos)
-      *next_pos = pos;
+      *next_pos = cur_pos;
     return MAYBE_CORRUPT;
   }
 
@@ -1837,13 +1849,13 @@ FileJournal::read_entry_result FileJournal::do_read_entry(
 	*ss << "header crc (" << h->crc32c
 	    << ") doesn't match body crc (" << actual_crc << ")";
       if (next_pos)
-	*next_pos = pos;
+	*next_pos = cur_pos;
       return MAYBE_CORRUPT;
     }
   }
 
   // yay!
-  dout(2) << "read_entry " << pos << " : seq " << h->seq
+  dout(2) << "read_entry " << init_pos << " : seq " << h->seq
 	  << " " << h->len << " bytes"
 	  << dendl;
 
@@ -1855,15 +1867,15 @@ FileJournal::read_entry_result FileJournal::do_read_entry(
   // bind by reference to (packed) h->seq
   journalq.push_back(
     pair<uint64_t,off64_t>(static_cast<uint64_t>(h->seq),
-			   static_cast<off64_t>(pos)));
+			   static_cast<off64_t>(init_pos)));
 
   if (next_pos)
-    *next_pos = pos;
+    *next_pos = cur_pos;
 
   if (_h)
     *_h = *h;
 
-  assert(pos % header.alignment == 0);
+  assert(cur_pos % header.alignment == 0);
   return SUCCESS;
 }
 

@@ -11,6 +11,7 @@
 
 namespace librbd
 {
+class AsyncRequest;
 class ProgressContext;
 
 class AsyncObjectThrottleFinisher {
@@ -42,15 +43,17 @@ public:
   typedef boost::function<C_AsyncObjectThrottle*(AsyncObjectThrottle&,
       					   uint64_t)> ContextFactory;
 
-  AsyncObjectThrottle(const ContextFactory& context_factory, Context *ctx,
+  AsyncObjectThrottle(const AsyncRequest &async_request,
+                      const ContextFactory& context_factory, Context *ctx,
 		      ProgressContext &prog_ctx, uint64_t object_no,
 		      uint64_t end_object_no);
 
-  int start_ops(uint64_t max_concurrent);
+  void start_ops(uint64_t max_concurrent);
   virtual void finish_op(int r);
 
 private:
   Mutex m_lock;
+  const AsyncRequest &m_async_request;
   ContextFactory m_context_factory;
   Context *m_ctx;
   ProgressContext &m_prog_ctx;
@@ -59,7 +62,7 @@ private:
   uint64_t m_current_ops;
   int m_ret;
 
-  int start_next_op();
+  void start_next_op();
 };
 
 } // namespace librbd

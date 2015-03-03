@@ -128,7 +128,7 @@ enumerate_images(struct rbd_image_data *data)
 		    ((strlen(mount_image_name) > 0) &&
 		    (strcmp(ip, mount_image_name) == 0))) {
 			fprintf(stderr, "%s, ", ip);
-			im = (rbd_image*) malloc(sizeof(*im));
+			im = static_cast<rbd_image*>(malloc(sizeof(*im)));
 			im->image_name = ip;
 			im->next = *head;
 			*head = im;
@@ -502,6 +502,21 @@ rbdfs_init(struct fuse_conn_info *conn)
 	return NULL;
 }
 
+void
+rbdfs_destroy(void *unused)
+{
+	if (!gotrados)
+		return;
+	for (int i = 0; i < MAX_RBD_IMAGES; ++i) {
+		if (opentbl[i].image) {
+			rbd_close(opentbl[i].image);
+			opentbl[i].image = NULL;
+		}
+	}
+	rados_ioctx_destroy(ioctx);
+	rados_shutdown(cluster);
+}
+
 // return -errno on error.  fi->fh is not set until open time
 
 int
@@ -670,7 +685,7 @@ const static struct fuse_operations rbdfs_oper = {
   releasedir: rbdfs_releasedir,
   fsyncdir:   0,
   init:	      rbdfs_init,
-  destroy:    0,
+  destroy:    rbdfs_destroy,
   access:     0,
   create:     rbdfs_create,
   /* skip unimplemented */
