@@ -265,6 +265,9 @@ check_SCRIPTS += test/ceph-disk.sh
 endif
 
 EXTRA_DIST += \
+	$(srcdir)/test/debian-jessie/Dockerfile.in \
+	$(srcdir)/test/debian-jessie/install-deps.sh \
+	$(srcdir)/test/debian-jessie/debian \
 	$(srcdir)/test/ubuntu-12.04/Dockerfile.in \
 	$(srcdir)/test/ubuntu-12.04/install-deps.sh \
 	$(srcdir)/test/ubuntu-12.04/debian \
@@ -683,6 +686,7 @@ unittest_bit_vector_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL)
 check_PROGRAMS += unittest_bit_vector
 
 check_SCRIPTS += test/pybind/test_ceph_argparse.py
+check_SCRIPTS += test/pybind/test_ceph_daemon.py
 
 if WITH_RADOSGW
 ceph_test_cors_SOURCES = test/test_cors.cc
@@ -731,7 +735,8 @@ ceph_test_cls_rgw_opstate_LDADD = \
 	-lcurl -luuid -lexpat \
 	libcls_version_client.a libcls_log_client.a \
 	libcls_statelog_client.a libcls_refcount_client.la \
-	libcls_rgw_client.la libcls_user_client.a libcls_lock_client.la
+	libcls_rgw_client.la libcls_user_client.a libcls_lock_client.la \
+	$(LIBRADOS)
 ceph_test_cls_rgw_opstate_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 bin_DEBUGPROGRAMS += ceph_test_cls_rgw_opstate
 endif # WITH_RADOSGW
@@ -983,7 +988,8 @@ ceph_test_libcephfs_SOURCES = \
 	test/libcephfs/test.cc \
 	test/libcephfs/readdir_r_cb.cc \
 	test/libcephfs/caps.cc \
-	test/libcephfs/multiclient.cc
+	test/libcephfs/multiclient.cc \
+	test/libcephfs/flock.cc
 ceph_test_libcephfs_LDADD = $(LIBCEPHFS) $(UNITTEST_LDADD)
 ceph_test_libcephfs_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 bin_DEBUGPROGRAMS += ceph_test_libcephfs

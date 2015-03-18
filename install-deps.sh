@@ -38,6 +38,7 @@ Ubuntu|Debian|Devuan)
         packages=$(dpkg-checkbuilddeps --admindir=$DIR debian/control 2>&1 | \
             perl -p -e 's/.*Unmet build dependencies: *//;' \
             -e 's/build-essential:native/build-essential/;' \
+            -e 's/\|//g;' \
             -e 's/\(.*?\)//g;' \
             -e 's/ +/\n/g;' | sort)
         case $(lsb_release -sc) in
@@ -45,15 +46,28 @@ Ubuntu|Debian|Devuan)
                 packages=$(echo $packages | perl -pe 's/[-\w]*babeltrace[-\w]*//g')
                 ;;
         esac
-        $SUDO apt-get install -y $packages
+        packages=$(echo $packages) # change newlines into spaces
+        $SUDO bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y $packages"
         ;;
 CentOS|Fedora|SUSE*|RedHatEnterpriseServer)
         case $(lsb_release -si) in
             SUSE*)
                 $SUDO zypper -y yum-utils
                 ;;
-            *)
+            Fedora)
                 $SUDO yum install -y yum-utils
+                ;;
+            CentOS|RedHatEnterpriseServer)
+                $SUDO yum install -y yum-utils
+                MAJOR_VERSION=$(lsb_release -rs | cut -f1 -d.)
+                if test $(lsb_release -si) == RedHatEnterpriseServer ; then
+                    $SUDO yum install subscription-manager
+                    $SUDO subscription-manager repos --enable=rhel-$MAJOR_VERSION-server-optional-rpms
+                fi
+                $SUDO yum-config-manager --add-repo https://dl.fedoraproject.org/pub/epel/$MAJOR_VERSION/x86_64/ 
+                $SUDO yum install --nogpgcheck -y epel-release
+                $SUDO rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-$MAJOR_VERSION
+                $SUDO rm -f /etc/yum.repos.d/dl.fedoraproject.org*
                 ;;
         esac
         sed -e 's/@//g' < ceph.spec.in > $DIR/ceph.spec

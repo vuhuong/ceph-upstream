@@ -1487,6 +1487,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   if (write_ordered &&
       is_degraded_object(head, &valid_copies) &&
       (valid_copies < pool.info.min_size ||
+       waiting_for_degraded_object.count(head) ||
        pool.info.ec_pool() ||
        !cct->_conf->osd_enable_degraded_writes ||
        !(get_min_peer_features() & CEPH_FEATURE_OSD_DEGRADED_WRITES))) {
@@ -1606,8 +1607,13 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 
   bool in_hit_set = false;
   if (hit_set) {
-    if (missing_oid != hobject_t() && hit_set->contains(missing_oid))
-      in_hit_set = true;
+    if (obc.get()) {
+      if (obc->obs.oi.soid != hobject_t() && hit_set->contains(obc->obs.oi.soid))
+	in_hit_set = true;
+    } else {
+      if (missing_oid != hobject_t() && hit_set->contains(missing_oid))
+        in_hit_set = true;
+    }
     hit_set->insert(oid);
     if (hit_set->is_full() ||
 	hit_set_start_stamp + pool.info.hit_set_period <= m->get_recv_stamp()) {
@@ -6002,18 +6008,19 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
       dout(10) << " final snapset " << ctx->new_snapset
 	       << " in " << soid << dendl;
       setattr_maybe_cache(ctx->obc, ctx, ctx->op_t, SS_ATTR, bss);
-
-      if (pool.info.require_rollback()) {
-	set<string> changing;
-	changing.insert(OI_ATTR);
-	changing.insert(SS_ATTR);
-	ctx->obc->fill_in_setattrs(changing, &(ctx->mod_desc));
-      } else {
-	// replicated pools are never rollbackable in this case
-	ctx->mod_desc.mark_unrollbackable();
-      }
     } else {
       dout(10) << " no snapset (this is a clone)" << dendl;
+    }
+
+    if (pool.info.require_rollback()) {
+      set<string> changing;
+      changing.insert(OI_ATTR);
+      if (!soid.is_snap())
+	changing.insert(SS_ATTR);
+      ctx->obc->fill_in_setattrs(changing, &(ctx->mod_desc));
+    } else {
+      // replicated pools are never rollbackable in this case
+      ctx->mod_desc.mark_unrollbackable();
     }
   } else {
     ctx->new_obs.oi = object_info_t(ctx->obc->obs.oi.soid);
@@ -7527,7 +7534,7 @@ void ReplicatedPG::eval_repop(RepGather *repop)
 	     waiting_for_ack[repop->v].begin();
 	   i != waiting_for_ack[repop->v].end();
 	   ++i) {
-	MOSDOp *m = (MOSDOp*)i->first->get_req();
+	MOSDOp *m = static_cast<MOSDOp*>(i->first->get_req());
 	MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
 	reply->set_reply_versions(repop->ctx->at_version,
 				  i->second);

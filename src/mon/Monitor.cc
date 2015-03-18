@@ -437,6 +437,7 @@ void Monitor::write_features(MonitorDBStore::TransactionRef t)
 const char** Monitor::get_tracked_conf_keys() const
 {
   static const char* KEYS[] = {
+    "crushtool", // helpful for testing
     "mon_lease",
     "mon_lease_renew_interval",
     "mon_lease_ack_timeout",
@@ -536,14 +537,14 @@ int Monitor::preinit()
   assert(!logger);
   {
     PerfCountersBuilder pcb(g_ceph_context, "mon", l_mon_first, l_mon_last);
-    pcb.add_u64(l_mon_num_sessions, "num_sessions", "Current number of opened monitor sessions");
-    pcb.add_u64_counter(l_mon_session_add, "session_add", "Number of created monitor sessions");
-    pcb.add_u64_counter(l_mon_session_rm, "session_rm", "Number of remove_session calls in monitor");
-    pcb.add_u64_counter(l_mon_session_trim, "session_trim", "Number of trimed monitor sessions");
-    pcb.add_u64_counter(l_mon_num_elections, "num_elections", "Number of elections monitor took part in");
-    pcb.add_u64_counter(l_mon_election_call, "election_call", "Number of elections started by monitor");
-    pcb.add_u64_counter(l_mon_election_win, "election_win", "Number of elections won by monitor");
-    pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Number of elections lost by monitor");
+    pcb.add_u64(l_mon_num_sessions, "num_sessions", "Open sessions", "sess");
+    pcb.add_u64_counter(l_mon_session_add, "session_add", "Created sessions", "sadd");
+    pcb.add_u64_counter(l_mon_session_rm, "session_rm", "Removed sessions", "srm");
+    pcb.add_u64_counter(l_mon_session_trim, "session_trim", "Trimmed sessions");
+    pcb.add_u64_counter(l_mon_num_elections, "num_elections", "Elections participated in");
+    pcb.add_u64_counter(l_mon_election_call, "election_call", "Elections started");
+    pcb.add_u64_counter(l_mon_election_win, "election_win", "Elections won");
+    pcb.add_u64_counter(l_mon_election_lose, "election_lose", "Elections lost");
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
   }
@@ -551,28 +552,28 @@ int Monitor::preinit()
   assert(!cluster_logger);
   {
     PerfCountersBuilder pcb(g_ceph_context, "cluster", l_cluster_first, l_cluster_last);
-    pcb.add_u64(l_cluster_num_mon, "num_mon", "Number of monitors, registered on cluster");
-    pcb.add_u64(l_cluster_num_mon_quorum, "num_mon_quorum", "Number of monitors in quorum");
-    pcb.add_u64(l_cluster_num_osd, "num_osd", "Total number of OSD");
-    pcb.add_u64(l_cluster_num_osd_up, "num_osd_up", "Number of OSDs that are up");
-    pcb.add_u64(l_cluster_num_osd_in, "num_osd_in", "Number of OSD in state \"in\" (they are in cluster)");
+    pcb.add_u64(l_cluster_num_mon, "num_mon", "Monitors");
+    pcb.add_u64(l_cluster_num_mon_quorum, "num_mon_quorum", "Monitors in quorum");
+    pcb.add_u64(l_cluster_num_osd, "num_osd", "OSDs");
+    pcb.add_u64(l_cluster_num_osd_up, "num_osd_up", "OSDs that are up");
+    pcb.add_u64(l_cluster_num_osd_in, "num_osd_in", "OSD in state \"in\" (they are in cluster)");
     pcb.add_u64(l_cluster_osd_epoch, "osd_epoch", "Current epoch of OSD map");
-    pcb.add_u64(l_cluster_osd_bytes, "osd_bytes", "Total capacity of cluster in bytes");
-    pcb.add_u64(l_cluster_osd_bytes_used, "osd_bytes_used", "Number of used bytes on cluster");
-    pcb.add_u64(l_cluster_osd_bytes_avail, "osd_bytes_avail", "Number of available bytes on cluster");
-    pcb.add_u64(l_cluster_num_pool, "num_pool", "Number of pools");
-    pcb.add_u64(l_cluster_num_pg, "num_pg", "Total number of placement groups");
-    pcb.add_u64(l_cluster_num_pg_active_clean, "num_pg_active_clean", "Number of placement groups in active+clean state");
-    pcb.add_u64(l_cluster_num_pg_active, "num_pg_active", "Number of placement groups in active state");
-    pcb.add_u64(l_cluster_num_pg_peering, "num_pg_peering", "Number of placement groups in peering state");
-    pcb.add_u64(l_cluster_num_object, "num_object", "Total number of objects on cluster");
-    pcb.add_u64(l_cluster_num_object_degraded, "num_object_degraded", "Number of degraded (missing replicas) objects");
-    pcb.add_u64(l_cluster_num_object_misplaced, "num_object_misplaced", "Number of misplaced (wrong location in the cluster) objects");
-    pcb.add_u64(l_cluster_num_object_unfound, "num_object_unfound", "Number of unfound objects");
-    pcb.add_u64(l_cluster_num_bytes, "num_bytes", "Total number of bytes of all objects");
-    pcb.add_u64(l_cluster_num_mds_up, "num_mds_up", "Number of MDSs that are up");
-    pcb.add_u64(l_cluster_num_mds_in, "num_mds_in", "Number of MDS in state \"in\" (they are in cluster)");
-    pcb.add_u64(l_cluster_num_mds_failed, "num_mds_failed", "Number of failed MDS");
+    pcb.add_u64(l_cluster_osd_bytes, "osd_bytes", "Total capacity of cluster");
+    pcb.add_u64(l_cluster_osd_bytes_used, "osd_bytes_used", "Used space");
+    pcb.add_u64(l_cluster_osd_bytes_avail, "osd_bytes_avail", "Available space");
+    pcb.add_u64(l_cluster_num_pool, "num_pool", "Pools");
+    pcb.add_u64(l_cluster_num_pg, "num_pg", "Placement groups");
+    pcb.add_u64(l_cluster_num_pg_active_clean, "num_pg_active_clean", "Placement groups in active+clean state");
+    pcb.add_u64(l_cluster_num_pg_active, "num_pg_active", "Placement groups in active state");
+    pcb.add_u64(l_cluster_num_pg_peering, "num_pg_peering", "Placement groups in peering state");
+    pcb.add_u64(l_cluster_num_object, "num_object", "Objects");
+    pcb.add_u64(l_cluster_num_object_degraded, "num_object_degraded", "Degraded (missing replicas) objects");
+    pcb.add_u64(l_cluster_num_object_misplaced, "num_object_misplaced", "Misplaced (wrong location in the cluster) objects");
+    pcb.add_u64(l_cluster_num_object_unfound, "num_object_unfound", "Unfound objects");
+    pcb.add_u64(l_cluster_num_bytes, "num_bytes", "Size of all objects");
+    pcb.add_u64(l_cluster_num_mds_up, "num_mds_up", "MDSs that are up");
+    pcb.add_u64(l_cluster_num_mds_in, "num_mds_in", "MDS in state \"in\" (they are in cluster)");
+    pcb.add_u64(l_cluster_num_mds_failed, "num_mds_failed", "Failed MDS");
     pcb.add_u64(l_cluster_mds_epoch, "mds_epoch", "Current epoch of MDS map");
     cluster_logger = pcb.create_perf_counters();
   }
@@ -3667,7 +3668,7 @@ void Monitor::timecheck_start_round()
     dout(10) << __func__ << " there's a timecheck going on" << dendl;
     utime_t curr_time = ceph_clock_now(g_ceph_context);
     double max = g_conf->mon_timecheck_interval*3;
-    if (curr_time - timecheck_round_start > max) {
+    if (curr_time - timecheck_round_start < max) {
       dout(10) << __func__ << " keep current round going" << dendl;
       goto out;
     } else {

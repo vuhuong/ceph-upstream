@@ -1961,6 +1961,8 @@ locks to ceph-fuse and libcephfs.
 
 We recommend that all Firefly users upgrade.
 
+For more detailed information, see :download:`the complete changelog <changelog/v0.80.9.txt>`.
+
 Adjusting CRUSH maps
 --------------------
 
@@ -2017,23 +2019,27 @@ Notable Changes
 * librbd: fix read caching performance regression (#9854 Jason Dillaman)
 * librbd: gracefully handle deleted/renamed pools (#10270 Jason Dillaman)
 * mon: fix dump of chooseleaf_vary_r tunable (Sage Weil)
+* osd: fix PG ref leak in snaptrimmer on peering (#10421 Kefu Chai)
 * osd: handle no-op write with snapshot (#10262 Sage Weil)
 * radosgw-admin: create subuser when creating user (#10103 Yehuda Sadeh)
-* rgw: S3 object copy content-type fix (#9478 Yehuda Sadeh)
-* rgw: URL decode query params correctly (#10271 Georgio Dimitrakakis, Yehuda Sadeh)
 * rgw: change multipart uplaod id magic (#10271 Georgio Dimitrakakis, Yehuda Sadeh)
+* rgw: don't overwrite bucket/object owner when setting ACLs (#10978 Yehuda Sadeh)
+* rgw: enable IPv6 for embedded civetweb (#10965 Yehuda Sadeh)
 * rgw: fix partial swift GET (#10553 Yehuda Sadeh)
 * rgw: fix quota disable (#9907 Dong Lei)
 * rgw: index swift keys appropriately (#10471 Hemant Burman, Yehuda Sadeh)
 * rgw: make setattrs update bucket index (#5595 Yehuda Sadeh)
+* rgw: pass civetweb configurables (#10907 Yehuda Sadeh)
 * rgw: remove swift user manifest (DLO) hash calculation (#9973 Yehuda Sadeh)
 * rgw: return correct len for 0-len objects (#9877 Yehuda Sadeh)
+* rgw: S3 object copy content-type fix (#9478 Yehuda Sadeh)
 * rgw: send ETag on S3 object copy (#9479 Yehuda Sadeh)
 * rgw: send HTTP status reason explicitly in fastcgi (Yehuda Sadeh)
 * rgw: set ulimit -n from sysvinit (el6) init script (#9587 Sage Weil)
 * rgw: update swift subuser permission masks when authenticating (#9918 Yehuda Sadeh)
-* rgw: use \r\n for http headers (#9254 Benedikt Fraunhofer, Yehuda Sadeh)
+* rgw: URL decode query params correctly (#10271 Georgio Dimitrakakis, Yehuda Sadeh)
 * rgw: use attrs when reading object attrs (#10307 Yehuda Sadeh)
+* rgw: use \r\n for http headers (#9254 Benedikt Fraunhofer, Yehuda Sadeh)
 
 
 v0.80.8 Firefly
@@ -2046,6 +2052,8 @@ fix, and some packaging updates.
 
 We recommend that all users for v0.80.x firefly upgrade when it is
 convenient to do so.
+
+For more detailed information, see :download:`the complete changelog <changelog/v0.80.8.txt>`.
 
 Notable Changes
 ---------------
@@ -4190,6 +4198,50 @@ Notable Changes
 * rgw: complete in-progress requests before shutting down
 * rgw: fix S3 auth with response-* query string params (Sylvain Munaut, Yehuda Sadeh)
 * sysvinit: add condrestart command (Dan van der Ster)
+
+
+v0.67.12 "Dumpling"
+===================
+
+This stable update for Dumpling fixes a few longstanding issues with
+backfill in the OSD that can lead to stalled IOs.  There is also a fix
+for memory utilization for reads in librbd when caching is enabled,
+and then several other small fixes across the rest of the system.
+
+Dumpling users who have encountered IO stalls during backfill and who
+do not expect to upgrade to Firefly soon should upgrade.  Everyone
+else should upgrade to Firefly already.  This is likely to be the last stable
+release for the 0.67.x Dumpling series.
+
+
+Notable Changes
+---------------
+
+* buffer: fix buffer rebuild alignment corner case (#6614 #6003 Loic Dachary, Samuel Just)
+* ceph-disk: reprobe partitions after zap (#9665 #9721 Loic Dachary)
+* ceph-disk: use partx instead of partprobe when appropriate (Loic Dachary)
+* common: add $cctid meta variable (#6228 Adam Crume)
+* crush: fix get_full_location_ordered (Sage Weil)
+* crush: pick ruleset id that matches rule_id (#9675 Xiaoxi Chen)
+* libcephfs: fix tid wrap bug (#9869 Greg Farnum)
+* libcephfs: get osd location on -1 should return EINVAL (Sage Weil)
+* librados: fix race condition with C API and op timeouts (#9582 Sage Weil)
+* librbd: constrain max number of in-flight read requests (#9854 Jason Dillaman)
+* librbd: enforce cache size on read requests (Jason Dillaman)
+* librbd: fix invalid close in image open failure path (#10030 Jason Dillaman)
+* librbd: fix read hang on sparse files (Jason Dillaman)
+* librbd: gracefully handle deleted/renamed pools (#10270 #10122 Jason Dillaman)
+* librbd: protect list_children from invalid child pool ioctxs (#10123 Jason Dillaman)
+* mds: fix ctime updates from clients without dirty caps (#9514 Greg Farnum)
+* mds: fix rare NULL dereference in cap update path (Greg Farnum)
+* mds: store backtrace on straydir (Yan, Zheng)
+* osd: fix journal committed_thru update after replay (#6756 Samuel Just)
+* osd: fix memory leak, busy loop on snap trim (#9113 Samuel Just)
+* osd: fix misc peering, recovery bugs (#10168 Samuel Just)
+* osd: fix purged_snap field on backfill start (#9487 Sage Weil)
+* osd: handle no-op write with snapshot corner case (#10262 Sage Weil, Loic Dachary)
+* osd: respect RWORDERED rados flag (Sage Weil)
+* osd: several backfill fixes and refactors (Samuel Just, David Zafman)
 
 
 v0.67.11 "Dumpling"

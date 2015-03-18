@@ -193,8 +193,8 @@ namespace librbd {
   int async_flatten(ImageCtx *ictx, Context *ctx, ProgressContext &prog_ctx);
   int async_resize(ImageCtx *ictx, Context *ctx, uint64_t size,
 		   ProgressContext &prog_ctx);
-  void async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t original_size,
-			   uint64_t new_size, ProgressContext& prog_ctx);
+  void async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t new_size,
+                           ProgressContext& prog_ctx);
 
   int aio_write(ImageCtx *ictx, uint64_t off, size_t len, const char *buf,
 		AioCompletion *c, int op_flags);
@@ -207,6 +207,10 @@ namespace librbd {
   int flush(ImageCtx *ictx);
   int _flush(ImageCtx *ictx);
   int invalidate_cache(ImageCtx *ictx);
+  int metadata_list(ImageCtx *ictx, const string &last, uint64_t max, map<string, bufferlist> *pairs);
+  int metadata_get(ImageCtx *ictx, const std::string &key, std::string *value);
+  int metadata_set(ImageCtx *ictx, const std::string &key, const std::string &value);
+  int metadata_remove(ImageCtx *ictx, const std::string &key);
 
   ssize_t handle_sparse_read(CephContext *cct,
 			     ceph::bufferlist data_bl,

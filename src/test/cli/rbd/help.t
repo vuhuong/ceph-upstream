@@ -34,6 +34,10 @@
                                                 path or "-" for stdin
     (cp | copy) <src> <dest>                    copy src image to dest
     (mv | rename) <src> <dest>                  rename src image to dest
+    image-meta list <image-name>                image metadata list keys with values
+    image-meta get <image-name> <key>           image metadata get the value associated with the key
+    image-meta set <image-name> <key> <value>   image metadata set key with value
+    image-meta remove <image-name> <key>        image metadata remove the key and value associated
     snap ls <image-name>                        dump list of image snapshots
     snap create <snap-name>                     create a snapshot
     snap rollback <snap-name>                   rollback image to snapshot
@@ -79,6 +83,8 @@
                                        +4 exclusive lock, +8 object map
     --image-shared                     image will be used concurrently (disables
                                        RBD exclusive lock and dependent features)
+    --stripe-unit <size-in-bytes>      size (in bytes) of a block of data
+    --stripe-count <num>               number of consecutive objects in a stripe
     --id <username>                    rados user (without 'client.'prefix) to
                                        authenticate as
     --keyfile <path>                   file containing secret key for use with cephx

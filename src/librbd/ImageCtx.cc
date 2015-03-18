@@ -9,6 +9,7 @@
 
 #include "librbd/AsyncOperation.h"
 #include "librbd/AsyncRequest.h"
+#include "librbd/AsyncResizeRequest.h"
 #include "librbd/internal.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageWatcher.h"
@@ -433,6 +434,10 @@ namespace librbd {
   {
     assert(snap_lock.is_locked());
     if (in_snap_id == CEPH_NOSNAP) {
+      if (!async_resize_reqs.empty() &&
+          async_resize_reqs.front()->shrinking()) {
+        return async_resize_reqs.front()->get_image_size();
+      }
       return size;
     }
 
@@ -489,6 +494,28 @@ namespace librbd {
     return ((snap_flags & test_flags) == test_flags);
   }
 
+  int ImageCtx::update_flags(snap_t in_snap_id, uint64_t flag, bool enabled)
+  {
+    assert(snap_lock.is_wlocked());
+    uint64_t *_flags;
+    if (in_snap_id == CEPH_NOSNAP) {
+      _flags = &flags;
+    } else {
+      map<snap_t, SnapInfo>::iterator it = snap_info.find(in_snap_id);
+      if (it == snap_info.end()) {
+        return -ENOENT;
+      }
+      _flags = &it->second.flags;
+    }
+
+    if (enabled) {
+      (*_flags) |= flag;
+    } else {
+      (*_flags) &= ~flag;
+    }
+    return 0;
+  }
+
   const parent_info* ImageCtx::get_parent_info(snap_t in_snap_id) const
   {
     assert(snap_lock.is_locked());
@@ -527,6 +554,13 @@ namespace librbd {
 
   int ImageCtx::get_parent_overlap(snap_t in_snap_id, uint64_t *overlap) const
   {
+    assert(snap_lock.is_locked());
+    if (in_snap_id == CEPH_NOSNAP && !async_resize_reqs.empty() &&
+        async_resize_reqs.front()->shrinking()) {
+      *overlap = async_resize_reqs.front()->get_parent_overlap();
+      return 0;
+    }
+
     const parent_info *info = get_parent_info(in_snap_id);
     if (info) {
       *overlap = info->overlap;
@@ -568,23 +602,8 @@ namespace librbd {
     wr->extents.push_back(extent);
     {
       Mutex::Locker l(cache_lock);
-      object_cacher->writex(wr, object_set, cache_lock, onfinish);
+      object_cacher->writex(wr, object_set, onfinish);
     }
-  }
-
-  int ImageCtx::read_from_cache(object_t o, uint64_t object_no, bufferlist *bl,
-				size_t len, uint64_t off) {
-    int r;
-    Mutex mylock("librbd::ImageCtx::read_from_cache");
-    Cond cond;
-    bool done;
-    Context *onfinish = new C_SafeCond(&mylock, &cond, &done, &r);
-    aio_read_from_cache(o, object_no, bl, len, off, onfinish, 0);
-    mylock.Lock();
-    while (!done)
-      cond.Wait(mylock);
-    mylock.Unlock();
-    return r;
   }
 
   void ImageCtx::user_flushed() {
@@ -631,14 +650,26 @@ namespace librbd {
 
   void ImageCtx::shutdown_cache() {
     flush_async_operations();
-    invalidate_cache();
+    invalidate_cache(true);
     object_cacher->stop();
   }
 
-  int ImageCtx::invalidate_cache() {
+  int ImageCtx::invalidate_cache(bool purge_on_error) {
+    int result;
     C_SaferCond ctx;
     invalidate_cache(&ctx);
-    return ctx.wait();
+    result = ctx.wait();
+
+    if (result && purge_on_error) {
+      cache_lock.Lock();
+      if (object_cacher != NULL) {
+	lderr(cct) << "invalidate cache met error " << cpp_strerror(result) << " !Purging cache..." << dendl;
+	object_cacher->purge_set(object_set);
+      }
+      cache_lock.Unlock();
+    }
+
+    return result;
   }
 
   void ImageCtx::invalidate_cache(Context *on_finish) {
@@ -676,11 +707,10 @@ namespace librbd {
   }
 
   void ImageCtx::clear_nonexistence_cache() {
+    assert(cache_lock.is_locked());
     if (!object_cacher)
       return;
-    cache_lock.Lock();
     object_cacher->clear_nonexistence(object_set);
-    cache_lock.Unlock();
   }
 
   int ImageCtx::register_watch() {

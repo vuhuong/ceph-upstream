@@ -162,7 +162,8 @@ Commands
 :command:`clone` [*parent-snapname*] [*image-name*]
   Will create a clone (copy-on-write child) of the parent snapshot.
   Object order will be identical to that of the parent image unless
-  specified. Size will be the same as the parent snapshot.
+  specified. Size will be the same as the parent snapshot. The --stripe-unit
+  and --stripe-count arguments are optional, but must be used together.
 
   The parent snapshot must be protected (see `rbd snap protect`).
   This requires image format 2.
@@ -197,6 +198,9 @@ Commands
   stdin).  The import operation will try to create sparse rbd images 
   if possible.  For import from stdin, the sparsification unit is
   the data block size of the destination image (1 << order).
+
+  The --stripe-unit and --stripe-count arguments are optional, but must be
+  used together.
 
 :command:`export-diff` [*image-name*] [*dest-path*] [--from-snap *snapname*]
   Exports an incremental diff for an image to dest path (use - for stdout).  If
@@ -361,6 +365,17 @@ the running kernel.
 * crc - Enable CRC32C checksumming for data writes (default).
 
 * nocrc - Disable CRC32C checksumming for data writes.
+
+* cephx_require_signatures - Require cephx message signing, i.e. MSG_AUTH
+  feature bit (since 3.19, default).
+
+* nocephx_require_signatures - Don't require cephx message signing (since
+  3.19).
+
+* tcp_nodelay - Disable Nagle's algorithm on client sockets (since 4.0,
+  default).
+
+* notcp_nodelay - Enable Nagle's algorithm on client sockets (since 4.0).
 
 * osdkeepalive=x - OSD keepalive timeout (default is 5 seconds).
 

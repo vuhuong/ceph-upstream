@@ -172,9 +172,11 @@ void AsyncTrimRequest::send_pre_remove() {
         lost_exclusive_lock = true;
       } else {
         // flag the objects as pending deletion
+        Context *ctx = create_callback_context();
         if (!m_image_ctx.object_map.aio_update(m_delete_start, m_num_objects,
-						OBJECT_PENDING, OBJECT_EXISTS,
-						create_callback_context())) {
+					       OBJECT_PENDING, OBJECT_EXISTS,
+                                               ctx)) {
+          delete ctx;
           remove_objects = true;
         }
       }
@@ -207,10 +209,11 @@ bool AsyncTrimRequest::send_post_remove() {
         ldout(m_image_ctx.cct, 1) << "lost exclusive lock during trim" << dendl;
       } else {
         // flag the pending objects as removed
+        Context *ctx = create_callback_context();
         if (!m_image_ctx.object_map.aio_update(m_delete_start, m_num_objects,
-						OBJECT_NONEXISTENT,
-						OBJECT_PENDING,
-						create_callback_context())) {
+					       OBJECT_NONEXISTENT,
+					       OBJECT_PENDING, ctx)) {
+          delete ctx;
 	  clean_boundary = true;
 	}
       }
@@ -251,9 +254,11 @@ bool AsyncTrimRequest::send_clean_boundary() {
       uint64_t parent_overlap;
       {
         RWLock::RLocker l2(m_image_ctx.snap_lock);
-        RWLock::RLocker l3(m_image_ctx.parent_lock);
         snapc = m_image_ctx.snapc;
-        parent_overlap = m_image_ctx.parent_md.overlap;
+
+        RWLock::RLocker l3(m_image_ctx.parent_lock);
+        int r = m_image_ctx.get_parent_overlap(CEPH_NOSNAP, &parent_overlap);
+        assert(r == 0);
       }
 
       // discard the weird boundary, if any

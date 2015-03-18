@@ -38,6 +38,7 @@ namespace librbd {
 
   class AsyncOperation;
   class AsyncRequest;
+  class AsyncResizeRequest;
   class CopyupRequest;
   class ImageWatcher;
 
@@ -89,7 +90,7 @@ namespace librbd {
     RWLock parent_lock; // protects parent_md and parent
     Mutex refresh_lock; // protects refresh_seq and last_refresh
     RWLock object_map_lock; // protects object map updates and object_map itself
-    Mutex async_ops_lock; // protects async_ops
+    Mutex async_ops_lock; // protects async_ops and async_requests
     Mutex copyup_list_lock; // protects copyup_waiting_list
 
     unsigned extra_read_flags;
@@ -126,6 +127,8 @@ namespace librbd {
     ObjectMap object_map;
 
     atomic_t async_request_seq;
+
+    xlist<AsyncResizeRequest*> async_resize_reqs;
 
     /**
      * Either image_name or image_id must be set.
@@ -171,6 +174,7 @@ namespace librbd {
     bool test_features(uint64_t test_features) const;
     int get_flags(librados::snap_t in_snap_id, uint64_t *flags) const;
     bool test_flags(uint64_t test_flags) const;
+    int update_flags(librados::snap_t in_snap_id, uint64_t flag, bool enabled);
 
     const parent_info* get_parent_info(librados::snap_t in_snap_id) const;
     int64_t get_parent_pool_id(librados::snap_t in_snap_id) const;
@@ -183,13 +187,11 @@ namespace librbd {
 			     int fadvise_flags);
     void write_to_cache(object_t o, const bufferlist& bl, size_t len,
 			uint64_t off, Context *onfinish, int fadvise_flags);
-    int read_from_cache(object_t o, uint64_t object_no, bufferlist *bl,
-			size_t len, uint64_t off);
     void user_flushed();
     void flush_cache_aio(Context *onfinish);
     int flush_cache();
     void shutdown_cache();
-    int invalidate_cache();
+    int invalidate_cache(bool purge_on_error=false);
     void invalidate_cache(Context *on_finish);
     void invalidate_cache_completion(int r, Context *on_finish);
     void clear_nonexistence_cache();

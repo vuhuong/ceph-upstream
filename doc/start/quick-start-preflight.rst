@@ -63,7 +63,7 @@ following steps:
    Paste the following example code. Replace ``{ceph-release}`` with
    the recent major release of Ceph (e.g., ``firefly``). Replace ``{distro}``
    with your Linux distribution (e.g., ``el6`` for CentOS 6, 
-   ``el7`` for CentOS 7, ``rhel6.5`` for
+   ``el7`` for CentOS 7, ``rhel6`` for
    Red Hat 6.5, ``rhel7`` for Red Hat 7, and ``fc19`` or ``fc20`` for Fedora 19
    or Fedora 20. Finally, save the contents to the 
    ``/etc/yum.repos.d/ceph.repo`` file. ::
@@ -166,10 +166,9 @@ Enable Password-less SSH
 ------------------------
 
 Since ``ceph-deploy`` will not prompt for a password, you must generate
-SSH keys on the admin node and distribute the public key to each Ceph node.
-
-.. note:: ``ceph-deploy`` v1.1.3 and later releases will attempt to generate
-   the SSH keys for initial monitors. 
+SSH keys on the admin node and distribute the public key to each Ceph
+node. ``ceph-deploy`` will attempt to generate the SSH keys for initial
+monitors.
 
 #. Generate the SSH keys, but do not use ``sudo`` or the
    ``root`` user. Leave the passphrase empty::

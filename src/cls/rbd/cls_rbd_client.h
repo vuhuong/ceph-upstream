@@ -50,7 +50,7 @@ namespace librbd {
     int get_flags(librados::IoCtx *ioctx, const std::string &oid,
 		  uint64_t *flags, const std::vector<snapid_t> &snap_ids,
 		  vector<uint64_t> *snap_flags);
-    void set_flags(librados::ObjectWriteOperation *op,
+    void set_flags(librados::ObjectWriteOperation *op, snapid_t snap_id,
                    uint64_t flags, uint64_t mask);
     int remove_parent(librados::IoCtx *ioctx, const std::string &oid);
     void remove_parent(librados::ObjectWriteOperation *op);
@@ -87,6 +87,15 @@ namespace librbd {
 			      uint64_t *stripe_unit, uint64_t *stripe_count);
     int set_stripe_unit_count(librados::IoCtx *ioctx, const std::string &oid,
 			      uint64_t stripe_unit, uint64_t stripe_count);
+    int metadata_list(librados::IoCtx *ioctx, const std::string &oid,
+                      const std::string &start, uint64_t max_return,
+                      map<string, bufferlist> *pairs);
+    int metadata_set(librados::IoCtx *ioctx, const std::string &oid,
+                     const map<std::string, bufferlist> &data);
+    int metadata_remove(librados::IoCtx *ioctx, const std::string &oid,
+                        const std::string &key);
+    int metadata_get(librados::IoCtx *ioctx, const std::string &oid,
+                     const std::string &key, string *v);
 
     // operations on rbd_id objects
     int get_id(librados::IoCtx *ioctx, const std::string &oid, std::string *id);

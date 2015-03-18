@@ -319,6 +319,9 @@ function test_tiering()
   ceph osd pool create cache3 2
   ceph osd tier add-cache slow cache3 1024000
   ceph osd dump | grep cache3 | grep bloom | grep 'false_positive_probability: 0.05' | grep 'target_bytes 1024000' | grep '1200s x4'
+  ceph osd tier remove slow cache3 2> $TMPFILE || true
+  check_response "EBUSY: tier pool 'cache3' is the overlay for 'slow'; please remove-overlay first"
+  ceph osd tier remove-overlay slow
   ceph osd tier remove slow cache3
   ceph osd pool ls | grep cache3
   ceph osd pool delete cache3 cache3 --yes-i-really-really-mean-it
@@ -326,6 +329,22 @@ function test_tiering()
 
   ceph osd pool delete slow2 slow2 --yes-i-really-really-mean-it
   ceph osd pool delete slow slow --yes-i-really-really-mean-it
+
+  # check add-cache whether work
+  ceph osd pool create datapool 2
+  ceph osd pool create cachepool 2
+  ceph osd tier add-cache datapool cachepool 1024000
+  ceph osd tier cache-mode cachepool writeback
+  dd if=/dev/zero of=/tmp/add-cache bs=4K count=1
+  rados -p datapool put object /tmp/add-cache
+  rados -p cachepool stat object
+  rados -p cachepool cache-flush object
+  rados -p datapool stat object
+  ceph osd tier remove-overlay datapool
+  ceph osd tier remove datapool cachepool
+  ceph osd pool delete cachepool cachepool --yes-i-really-really-mean-it
+  ceph osd pool delete datapool datapool --yes-i-really-really-mean-it
+  rm -rf /tmp/add-cache
 
   # protection against pool removal when used as tiers
   ceph osd pool create datapool 2
@@ -335,6 +354,7 @@ function test_tiering()
   check_response "EBUSY: pool 'cachepool' is a tier of 'datapool'"
   ceph osd pool delete datapool datapool --yes-i-really-really-mean-it 2> $TMPFILE || true
   check_response "EBUSY: pool 'datapool' has tiers cachepool"
+  ceph osd tier remove-overlay datapool
   ceph osd tier remove datapool cachepool
   ceph osd pool delete cachepool cachepool --yes-i-really-really-mean-it
   ceph osd pool delete datapool datapool --yes-i-really-really-mean-it
@@ -832,6 +852,8 @@ function test_mon_mds()
 
 function test_mon_mon()
 {
+  # print help message
+  ceph mon
   # no mon add/remove
   ceph mon dump
   ceph mon getmap -o $TMPDIR/monmap.$$
@@ -954,6 +976,7 @@ function test_mon_osd()
   [ "$id" = "$id2" ]
   ceph osd rm $id
 
+  ceph osd
   ceph osd ls
   ceph osd pool create data 10
   ceph osd lspools | grep data
@@ -1138,6 +1161,7 @@ function test_mon_osd_pool_set()
 {
   TEST_POOL_GETSET=pool_getset
   ceph osd pool create $TEST_POOL_GETSET 10
+  ceph osd pool get $TEST_POOL_GETSET all
 
   for s in pg_num pgp_num size min_size crash_replay_interval crush_ruleset; do
     ceph osd pool get $TEST_POOL_GETSET $s
@@ -1394,6 +1418,24 @@ function test_mon_tell()
   ceph_watch_wait 'mon.1 \[DBG\] from.*cmd=\[{"prefix": "version"}\]: dispatch'
 }
 
+function test_mon_crushmap_validation()
+{
+  local map=$TMPDIR/map
+  ceph osd getcrushmap -o $map
+  # crushtool validation timesout and is ignored
+  cat > $TMPDIR/crushtool <<EOF
+#!/bin/sh
+sleep 1000
+exit 0 # success
+EOF
+  chmod +x $TMPDIR/crushtool
+  ceph tell mon.* injectargs --crushtool $TMPDIR/crushtool
+  ceph osd setcrushmap -i $map 2>&1 | grep 'took too long'
+  ceph tell mon.* injectargs --crushtool crushtool
+  # crushtool validation succeeds
+  ceph osd setcrushmap -i $map
+}
+
 #
 # New tests should be added to the TESTS array below
 #
@@ -1428,6 +1470,7 @@ MON_TESTS+=" mon_osd_erasure_code"
 MON_TESTS+=" mon_osd_misc"
 MON_TESTS+=" mon_heap_profiler"
 MON_TESTS+=" mon_tell"
+MON_TESTS+=" mon_crushmap_validation"
 
 OSD_TESTS+=" osd_bench"
 

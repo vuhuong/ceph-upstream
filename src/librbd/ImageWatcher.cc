@@ -100,7 +100,6 @@ int ImageWatcher::unregister_watch() {
   int r = 0;
   {
     RWLock::WLocker l(m_watch_lock);
-    assert(m_watch_state != WATCH_STATE_UNREGISTERED);
     if (m_watch_state == WATCH_STATE_REGISTERED) {
       r = m_image_ctx.md_ctx.unwatch2(m_watch_handle);
     }
@@ -308,7 +307,7 @@ int ImageWatcher::lock() {
       unlock();
       return r;
     }
-    RWLock::RLocker l2(m_image_ctx.snap_lock);
+    RWLock::WLocker l2(m_image_ctx.snap_lock);
     m_image_ctx.object_map.refresh(CEPH_NOSNAP);
   }
 

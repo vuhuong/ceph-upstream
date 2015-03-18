@@ -129,6 +129,11 @@ enum {
   l_osdc_osd_session_open,
   l_osdc_osd_session_close,
   l_osdc_osd_laggy,
+
+  l_osdc_osdop_omap_wr,
+  l_osdc_osdop_omap_rd,
+  l_osdc_osdop_omap_del,
+
   l_osdc_last,
 };
 
@@ -182,7 +187,8 @@ void Objecter::init()
   if (!logger) {
     PerfCountersBuilder pcb(cct, "objecter", l_osdc_first, l_osdc_last);
 
-    pcb.add_u64(l_osdc_op_active, "op_active");
+    pcb.add_u64(l_osdc_op_active, "op_active",
+        "Operations active", "actv");
     pcb.add_u64(l_osdc_op_laggy, "op_laggy");
     pcb.add_u64_counter(l_osdc_op_send, "op_send");
     pcb.add_u64_counter(l_osdc_op_send_bytes, "op_send_bytes");
@@ -191,8 +197,10 @@ void Objecter::init()
     pcb.add_u64_counter(l_osdc_op_commit, "op_commit");
 
     pcb.add_u64_counter(l_osdc_op, "op");
-    pcb.add_u64_counter(l_osdc_op_r, "op_r");
-    pcb.add_u64_counter(l_osdc_op_w, "op_w");
+    pcb.add_u64_counter(l_osdc_op_r, "op_r",
+        "Read operations", "read");
+    pcb.add_u64_counter(l_osdc_op_w, "op_w",
+        "Write operations", "writ");
     pcb.add_u64_counter(l_osdc_op_rmw, "op_rmw");
     pcb.add_u64_counter(l_osdc_op_pg, "op_pg");
 
@@ -253,6 +261,10 @@ void Objecter::init()
     pcb.add_u64_counter(l_osdc_osd_session_open, "osd_session_open");
     pcb.add_u64_counter(l_osdc_osd_session_close, "osd_session_close");
     pcb.add_u64(l_osdc_osd_laggy, "osd_laggy");
+
+    pcb.add_u64_counter(l_osdc_osdop_omap_wr, "omap_wr");
+    pcb.add_u64_counter(l_osdc_osdop_omap_rd, "omap_rd");
+    pcb.add_u64_counter(l_osdc_osdop_omap_del, "omap_del");
 
     logger = pcb.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
@@ -1293,6 +1305,9 @@ void Objecter::_check_op_pool_dne(Op *op, bool session_locked)
       if (op->oncommit) {
 	op->oncommit->complete(-ENOENT);
       }
+      if (op->oncommit_sync) {
+	op->oncommit_sync->complete(-ENOENT);
+      }
 
       OSDSession *s = op->session;
       assert(s != NULL);
@@ -2027,7 +2042,7 @@ void Objecter::_send_op_account(Op *op)
   } else {
     ldout(cct, 20) << " note: not requesting ack" << dendl;
   }
-  if (op->oncommit) {
+  if (op->oncommit || op->oncommit_sync) {
     num_uncommitted.inc();
   } else {
     ldout(cct, 20) << " note: not requesting commit" << dendl;
@@ -2069,6 +2084,22 @@ void Objecter::_send_op_account(Op *op)
     case CEPH_OSD_OP_TMAPUP: code = l_osdc_osdop_tmap_up; break;
     case CEPH_OSD_OP_TMAPPUT: code = l_osdc_osdop_tmap_put; break;
     case CEPH_OSD_OP_TMAPGET: code = l_osdc_osdop_tmap_get; break;
+
+    // OMAP read operations
+    case CEPH_OSD_OP_OMAPGETVALS:
+    case CEPH_OSD_OP_OMAPGETKEYS:
+    case CEPH_OSD_OP_OMAPGETHEADER:
+    case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
+    case CEPH_OSD_OP_OMAP_CMP: code = l_osdc_osdop_omap_rd; break;
+
+    // OMAP write operations
+    case CEPH_OSD_OP_OMAPSETVALS:
+    case CEPH_OSD_OP_OMAPSETHEADER: code = l_osdc_osdop_omap_wr; break;
+
+    // OMAP del operations
+    case CEPH_OSD_OP_OMAPCLEAR:
+    case CEPH_OSD_OP_OMAPRMKEYS: code = l_osdc_osdop_omap_del; break;
+
     case CEPH_OSD_OP_CALL: code = l_osdc_osdop_call; break;
     case CEPH_OSD_OP_WATCH: code = l_osdc_osdop_watch; break;
     case CEPH_OSD_OP_NOTIFY: code = l_osdc_osdop_notify; break;
@@ -2196,6 +2227,10 @@ int Objecter::op_cancel(OSDSession *s, ceph_tid_t tid, int r)
   if (op->oncommit) {
     op->oncommit->complete(r);
     op->oncommit = NULL;
+  }
+  if (op->oncommit_sync) {
+    op->oncommit_sync->complete(r);
+    op->oncommit_sync = NULL;
   }
   _op_cancel_map_check(op);
   _finish_op(op);
@@ -2656,6 +2691,7 @@ void Objecter::_cancel_linger_op(Op *op)
   assert(!op->should_resend);
   delete op->onack;
   delete op->oncommit;
+  delete op->oncommit_sync;
 
   _finish_op(op);
 }
@@ -2906,7 +2942,7 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     ldout(cct, 5) << " got redirect reply; redirecting" << dendl;
     if (op->onack)
       num_unacked.dec();
-    if (op->oncommit)
+    if (op->oncommit || op->oncommit_sync)
       num_uncommitted.dec();
     _session_op_remove(s, op);
     s->lock.unlock();
@@ -2997,23 +3033,28 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
     num_unacked.dec();
     logger->inc(l_osdc_op_ack);
   }
-  if (op->oncommit && (m->is_ondisk() || rc)) {
-    ldout(cct, 15) << "handle_osd_op_reply safe" << dendl;
-    oncommit = op->oncommit;
-    op->oncommit = 0;
-    num_uncommitted.dec();
-    logger->inc(l_osdc_op_commit);
-  }
-  if (op->oncommit_sync) {
-    op->oncommit_sync->complete(rc);
-    op->oncommit_sync = NULL;
+  if (m->is_ondisk() || rc) {
+    if (op->oncommit) {
+      ldout(cct, 15) << "handle_osd_op_reply safe" << dendl;
+      oncommit = op->oncommit;
+      op->oncommit = NULL;
+      num_uncommitted.dec();
+      logger->inc(l_osdc_op_commit);
+    }
+    if (op->oncommit_sync) {
+      ldout(cct, 15) << "handle_osd_op_reply safe (sync)" << dendl;
+      op->oncommit_sync->complete(rc);
+      op->oncommit_sync = NULL;
+      num_uncommitted.dec();
+      logger->inc(l_osdc_op_commit);
+    }
   }
 
   /* get it before we call _finish_op() */
   Mutex *completion_lock = (op->target.base_oid.name.size() ? s->get_lock(op->target.base_oid) : NULL);
 
   // done with this tid?
-  if (!op->onack && !op->oncommit) {
+  if (!op->onack && !op->oncommit && !op->oncommit_sync) {
     ldout(cct, 15) << "handle_osd_op_reply completed tid " << tid << dendl;
     _finish_op(op);
   }

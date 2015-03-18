@@ -109,6 +109,7 @@ endif # WITH_FUSE
 libcephfs_la_SOURCES = libcephfs.cc
 libcephfs_la_LIBADD = $(LIBCLIENT) $(LIBCOMMON) $(PTHREAD_LIBS) $(CRYPTO_LIBS) $(EXTRALIBS)
 libcephfs_la_LDFLAGS = ${AM_LDFLAGS} -version-info 1:0:0 -export-symbols-regex '^ceph_.*'
+libcephfs_la_LDFLAGS += -Xcompiler -Xlinker -Xcompiler '--exclude-libs=libcommon.a'
 lib_LTLIBRARIES += libcephfs.la
 
 # jni library (java source is in src/java)
@@ -726,6 +727,7 @@ python_PYTHON = pybind/rados.py \
 		pybind/rbd.py \
 		pybind/cephfs.py \
 		pybind/ceph_argparse.py \
+		pybind/ceph_daemon.py \
 		pybind/ceph_rest_api.py
 
 

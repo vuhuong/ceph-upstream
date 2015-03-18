@@ -1077,6 +1077,7 @@ reprotect_and_return_err:
     int remove_r;
     librbd::NoOpProgressContext no_op;
     ImageCtx *c_imctx = NULL;
+    map<string, bufferlist> pairs;
     // make sure parent snapshot exists
     ImageCtx *p_imctx = new ImageCtx(p_name, "", p_snap_name, p_ioctx, true);
     r = open_image(p_imctx);
@@ -1140,6 +1141,17 @@ reprotect_and_return_err:
     r = cls_client::add_child(&c_ioctx, RBD_CHILDREN, pspec, c_imctx->id);
     if (r < 0) {
       lderr(cct) << "couldn't add child: " << r << dendl;
+      goto err_close_child;
+    }
+
+    r = cls_client::metadata_list(&p_ioctx, p_imctx->header_oid, "", 0, &pairs);
+    if (r < 0) {
+      lderr(cct) << "couldn't list metadata: " << r << dendl;
+      goto err_close_child;
+    }
+    r = cls_client::metadata_set(&c_ioctx, c_imctx->header_oid, pairs);
+    if (r < 0) {
+      lderr(cct) << "couldn't set metadata: " << r << dendl;
       goto err_close_child;
     }
 
@@ -1346,6 +1358,10 @@ reprotect_and_return_err:
 
   int open_parent(ImageCtx *ictx)
   {
+    assert(ictx->cache_lock.is_locked());
+    assert(ictx->snap_lock.is_wlocked());
+    assert(ictx->parent_lock.is_wlocked());
+
     string pool_name;
     Rados rados(ictx->md_ctx);
 
@@ -1389,11 +1405,13 @@ reprotect_and_return_err:
       return r;
     }
 
+    ictx->parent->cache_lock.Lock();
     ictx->parent->snap_lock.get_write();
     r = ictx->parent->get_snap_name(parent_snap_id, &ictx->parent->snap_name);
     if (r < 0) {
       lderr(ictx->cct) << "parent snapshot does not exist" << dendl;
       ictx->parent->snap_lock.put_write();
+      ictx->parent->cache_lock.Unlock();
       close_image(ictx->parent);
       ictx->parent = NULL;
       return r;
@@ -1407,12 +1425,14 @@ reprotect_and_return_err:
 		       << ictx->parent->snap_name << dendl;
       ictx->parent->parent_lock.put_write();
       ictx->parent->snap_lock.put_write();
+      ictx->parent->cache_lock.Unlock();
       close_image(ictx->parent);
       ictx->parent = NULL;
       return r;
     }
     ictx->parent->parent_lock.put_write();
     ictx->parent->snap_lock.put_write();
+    ictx->parent->cache_lock.Unlock();
 
     return 0;
   }
@@ -1622,11 +1642,18 @@ reprotect_and_return_err:
   int resize(ImageCtx *ictx, uint64_t size, ProgressContext& prog_ctx)
   {
     CephContext *cct = ictx->cct;
+
+    ictx->snap_lock.get_read();
     ldout(cct, 20) << "resize " << ictx << " " << ictx->size << " -> "
 		   << size << dendl;
+    ictx->snap_lock.put_read();
+
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
 
     uint64_t request_id = ictx->async_request_seq.inc();
-    int r;
     do {
       C_SaferCond ctx;
       {
@@ -1639,11 +1666,17 @@ reprotect_and_return_err:
 	    break;
 	  }
 
+          RWLock::RLocker snap_locker(ictx->snap_lock);
+          if (ictx->snap_id != CEPH_NOSNAP || ictx->read_only) {
+            return -EROFS;
+          }
+
 	  r = ictx->image_watcher->notify_resize(request_id, size, prog_ctx);
 	  if (r != -ETIMEDOUT && r != -ERESTART) {
 	    return r;
 	  }
-	  ldout(ictx->cct, 5) << "resize timed out notifying lock owner" << dendl;
+	  ldout(ictx->cct, 5) << "resize timed out notifying lock owner"
+                              << dendl;
 	}
 
 	r = async_resize(ictx, &ctx, size, prog_ctx);
@@ -1663,6 +1696,7 @@ reprotect_and_return_err:
     ldout(cct, 2) << "resize finished" << dendl;
     return r;
   }
+
   int async_resize(ImageCtx *ictx, Context *ctx, uint64_t size,
 		   ProgressContext &prog_ctx)
   {
@@ -1671,35 +1705,33 @@ reprotect_and_return_err:
 	   ictx->image_watcher->is_lock_owner());
 
     CephContext *cct = ictx->cct;
+    ictx->snap_lock.get_read();
     ldout(cct, 20) << "async_resize " << ictx << " " << ictx->size << " -> "
 		   << size << dendl;
-
-    if (ictx->snap_id != CEPH_NOSNAP || ictx->read_only) {
-      return -EROFS;
-    }
+    ictx->snap_lock.put_read();
 
     int r = ictx_check(ictx);
     if (r < 0) {
       return r;
     }
 
-    uint64_t original_size;
     {
-      ictx->snap_lock.get_read();
-      original_size = ictx->size;
-      ictx->snap_lock.put_read();
+      RWLock::RLocker snap_locker(ictx->snap_lock);
+      if (ictx->snap_id != CEPH_NOSNAP || ictx->read_only) {
+        return -EROFS;
+      }
     }
 
-    async_resize_helper(ictx, ctx, original_size, size, prog_ctx);
+    async_resize_helper(ictx, ctx, size, prog_ctx);
     return 0;
   }
 
-  void async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t original_size,
-		           uint64_t new_size, ProgressContext& prog_ctx)
+  void async_resize_helper(ImageCtx *ictx, Context *ctx, uint64_t new_size,
+                           ProgressContext& prog_ctx)
   {
     assert(ictx->owner_lock.is_locked());
-    AsyncResizeRequest *req = new AsyncResizeRequest(*ictx, ctx, original_size,
-						     new_size, prog_ctx);
+    AsyncResizeRequest *req = new AsyncResizeRequest(*ictx, ctx, new_size,
+                                                     prog_ctx);
     req->send();
   }
 
@@ -1835,6 +1867,10 @@ reprotect_and_return_err:
   }
 
   int refresh_parent(ImageCtx *ictx) {
+    assert(ictx->cache_lock.is_locked());
+    assert(ictx->snap_lock.is_wlocked());
+    assert(ictx->parent_lock.is_wlocked());
+
     // close the parent if it changed or this image no longer needs
     // to read from it
     int r;
@@ -1886,10 +1922,11 @@ reprotect_and_return_err:
     vector<uint8_t> snap_protection;
     vector<uint64_t> snap_flags;
     {
-      int r;
-      RWLock::WLocker l(ictx->snap_lock);
+      Mutex::Locker cache_locker(ictx->cache_lock);
+      RWLock::WLocker snap_locker(ictx->snap_lock);
       {
-	RWLock::WLocker l2(ictx->parent_lock);
+	int r;
+	RWLock::WLocker parent_locker(ictx->parent_lock);
 	ictx->lockers.clear();
 	if (ictx->old_format) {
 	  r = read_header(ictx->md_ctx, ictx->header_oid, &ictx->header, NULL);
@@ -2040,7 +2077,7 @@ reprotect_and_return_err:
       ictx->object_map.refresh(ictx->snap_id);
 
       ictx->data_ctx.selfmanaged_snap_set_write_ctx(ictx->snapc.seq, ictx->snaps);
-    } // release snap_lock
+    } // release snap_lock and cache_lock
 
     if (new_snap) {
       _flush(ictx);
@@ -2066,7 +2103,6 @@ reprotect_and_return_err:
 
     RWLock::RLocker l(ictx->owner_lock);
     snap_t snap_id;
-    uint64_t original_size;
     uint64_t new_size;
     {
       RWLock::WLocker l2(ictx->md_lock);
@@ -2098,7 +2134,6 @@ reprotect_and_return_err:
       }
 
       ictx->snap_lock.get_read();
-      original_size = ictx->size;
       new_size = ictx->get_image_size(snap_id);
       ictx->snap_lock.put_read();
 
@@ -2115,7 +2150,7 @@ reprotect_and_return_err:
     ldout(cct, 2) << "resizing to snapshot size..." << dendl;
     NoOpProgressContext no_op;
     C_SaferCond ctx;
-    async_resize_helper(ictx, &ctx, original_size, new_size, no_op);
+    async_resize_helper(ictx, &ctx, new_size, no_op);
 
     r = ctx.wait();
     if (r < 0) {
@@ -2262,6 +2297,19 @@ reprotect_and_return_err:
       return -EINVAL;
     }
     int r;
+    map<string, bufferlist> pairs;
+
+    r = cls_client::metadata_list(&src->md_ctx, src->header_oid, "", 0, &pairs);
+    if (r < 0) {
+      lderr(cct) << "couldn't list metadata: " << r << dendl;
+      return r;
+    }
+    r = cls_client::metadata_set(&dest->md_ctx, dest->header_oid, pairs);
+    if (r < 0) {
+      lderr(cct) << "couldn't set metadata: " << r << dendl;
+      return r;
+    }
+
     SimpleThrottle throttle(cct->_conf->rbd_concurrent_management_ops, false);
     uint64_t period = src->get_stripe_period();
     for (uint64_t offset = 0; offset < src_size; offset += period) {
@@ -2292,10 +2340,11 @@ reprotect_and_return_err:
 
   int _snap_set(ImageCtx *ictx, const char *snap_name)
   {
-    RWLock::WLocker l(ictx->owner_lock);
-    RWLock::RLocker l1(ictx->md_lock);
-    RWLock::WLocker l2(ictx->snap_lock);
-    RWLock::WLocker l3(ictx->parent_lock);
+    RWLock::WLocker owner_locker(ictx->owner_lock);
+    RWLock::RLocker md_locker(ictx->md_lock);
+    Mutex::Locker cache_locker(ictx->cache_lock);
+    RWLock::WLocker snap_locker(ictx->snap_lock);
+    RWLock::WLocker parent_locker(ictx->parent_lock);
     int r;
     if ((snap_name != NULL) && (strlen(snap_name) != 0)) {
       r = ictx->snap_set(snap_name);
@@ -2449,12 +2498,19 @@ reprotect_and_return_err:
     CephContext *cct = ictx->cct;
     ldout(cct, 20) << "flatten" << dendl;
 
-    if (ictx->read_only || ictx->snap_id != CEPH_NOSNAP) {
-      return -EROFS;
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
+
+    {
+      RWLock::RLocker snap_locker(ictx->snap_lock);
+      if (ictx->read_only || ictx->snap_id != CEPH_NOSNAP) {
+        return -EROFS;
+      }
     }
 
     uint64_t request_id = ictx->async_request_seq.inc();
-    int r;
     do {
       C_SaferCond ctx;
       {
@@ -2471,7 +2527,8 @@ reprotect_and_return_err:
           if (r != -ETIMEDOUT && r != -ERESTART) {
             return r;
           }
-          ldout(ictx->cct, 5) << "flatten timed out notifying lock owner" << dendl;
+          ldout(ictx->cct, 5) << "flatten timed out notifying lock owner"
+                              << dendl;
         }
 
         r = async_flatten(ictx, &ctx, prog_ctx);
@@ -2500,10 +2557,6 @@ reprotect_and_return_err:
     CephContext *cct = ictx->cct;
     ldout(cct, 20) << "flatten" << dendl;
 
-    if (ictx->read_only || ictx->snap_id != CEPH_NOSNAP) {
-      return -EROFS;
-    }
-
     int r;
     // ictx_check also updates parent data
     if ((r = ictx_check(ictx)) < 0) {
@@ -2512,13 +2565,17 @@ reprotect_and_return_err:
     }
 
     uint64_t object_size;
-    uint64_t overlap;
     uint64_t overlap_objects;
     ::SnapContext snapc;
 
     {
+      uint64_t overlap;
       RWLock::RLocker l(ictx->snap_lock);
       RWLock::RLocker l2(ictx->parent_lock);
+
+      if (ictx->read_only || ictx->snap_id != CEPH_NOSNAP) {
+        return -EROFS;
+      }
 
       // can't flatten a non-clone
       if (ictx->parent_md.spec.pool_id == -1) {
@@ -2532,11 +2589,12 @@ reprotect_and_return_err:
 
       snapc = ictx->snapc;
       assert(ictx->parent != NULL);
-      assert(ictx->parent_md.overlap <= ictx->size);
+      r = ictx->get_parent_overlap(CEPH_NOSNAP, &overlap);
+      assert(r == 0);
+      assert(overlap <= ictx->size);
 
       object_size = ictx->get_object_size();
-      overlap = ictx->parent_md.overlap;
-      overlap_objects = Striper::get_num_objects(ictx->layout, overlap); 
+      overlap_objects = Striper::get_num_objects(ictx->layout, overlap);
     }
 
     AsyncFlattenRequest *req =
@@ -3356,6 +3414,60 @@ reprotect_and_return_err:
     return r;
   }
 
+  int metadata_get(ImageCtx *ictx, const string &key, string *value)
+  {
+    CephContext *cct = ictx->cct;
+    ldout(cct, 20) << "metadata_get " << ictx << " key=" << key << dendl;
+
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
+
+    return cls_client::metadata_get(&ictx->md_ctx, ictx->header_oid, key, value);
+  }
+
+  int metadata_set(ImageCtx *ictx, const string &key, const string &value)
+  {
+    CephContext *cct = ictx->cct;
+    ldout(cct, 20) << "metadata_set " << ictx << " key=" << key << " value=" << value << dendl;
+
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
+
+    map<string, bufferlist> data;
+    data[key].append(value);
+    return cls_client::metadata_set(&ictx->md_ctx, ictx->header_oid, data);
+  }
+
+  int metadata_remove(ImageCtx *ictx, const string &key)
+  {
+    CephContext *cct = ictx->cct;
+    ldout(cct, 20) << "metadata_remove " << ictx << " key=" << key << dendl;
+
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
+
+    return cls_client::metadata_remove(&ictx->md_ctx, ictx->header_oid, key);
+  }
+
+  int metadata_list(ImageCtx *ictx, const string &start, uint64_t max, map<string, bufferlist> *pairs)
+  {
+    CephContext *cct = ictx->cct;
+    ldout(cct, 20) << "metadata_list " << ictx << dendl;
+
+    int r = ictx_check(ictx);
+    if (r < 0) {
+      return r;
+    }
+
+    return cls_client::metadata_list(&ictx->md_ctx, ictx->header_oid, start, max, pairs);
+  }
+  
   int aio_discard(ImageCtx *ictx, uint64_t off, uint64_t len, AioCompletion *c)
   {
     CephContext *cct = ictx->cct;

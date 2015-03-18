@@ -1064,13 +1064,13 @@ int main(int argc, const char **argv)
   FCGX_Init();
 
   int r = 0;
-  RGWRados *store = RGWStoreManager::get_storage(g_ceph_context, true, true);
+  RGWRados *store = RGWStoreManager::get_storage(g_ceph_context,
+      g_conf->rgw_enable_gc_threads, g_conf->rgw_enable_quota_threads);
   if (!store) {
     derr << "Couldn't init storage provider (RADOS)" << dendl;
-    r = EIO;
+    return EIO;
   }
-  if (!r)
-    r = rgw_perf_start(g_ceph_context);
+  r = rgw_perf_start(g_ceph_context);
 
   rgw_rest_init(g_ceph_context, store->region);
 
@@ -1082,7 +1082,7 @@ int main(int argc, const char **argv)
   if (r) 
     return 1;
 
-  rgw_user_init(store->meta_mgr);
+  rgw_user_init(store);
   rgw_bucket_init(store->meta_mgr);
   rgw_log_usage_init(g_ceph_context, store);
 

@@ -114,6 +114,10 @@ void usage()
 "                                              path or \"-\" for stdin\n"
 "  (cp | copy) <src> <dest>                    copy src image to dest\n"
 "  (mv | rename) <src> <dest>                  rename src image to dest\n"
+"  image-meta list <image-name>                image metadata list keys with values\n"
+"  image-meta get <image-name> <key>           image metadata get the value associated with the key\n"
+"  image-meta set <image-name> <key> <value>   image metadata set key with value\n"
+"  image-meta remove <image-name> <key>        image metadata remove the key and value associated\n"
 "  snap ls <image-name>                        dump list of image snapshots\n"
 "  snap create <snap-name>                     create a snapshot\n"
 "  snap rollback <snap-name>                   rollback image to snapshot\n"
@@ -159,6 +163,8 @@ void usage()
 "                                     +4 exclusive lock, +8 object map\n"
 "  --image-shared                     image will be used concurrently (disables\n"
 "                                     RBD exclusive lock and dependent features)\n"
+"  --stripe-unit <size-in-bytes>      size (in bytes) of a block of data\n"
+"  --stripe-count <num>               number of consecutive objects in a stripe\n"
 "  --id <username>                    rados user (without 'client.'prefix) to\n"
 "                                     authenticate as\n"
 "  --keyfile <path>                   file containing secret key for use with cephx\n"
@@ -171,61 +177,20 @@ void usage()
 "  --allow-shrink                     allow shrinking of an image when resizing\n";
 }
 
-static string feature_str(uint64_t feature)
-{
-  switch (feature) {
-  case RBD_FEATURE_LAYERING:
-    return "layering";
-  case RBD_FEATURE_STRIPINGV2:
-    return "striping";
-  case RBD_FEATURE_EXCLUSIVE_LOCK:
-    return "exclusive";
-  case RBD_FEATURE_OBJECT_MAP:
-    return "object map";
-  default:
-    return "";
-  }
-}
-
-static string features_str(uint64_t features)
-{
-  string s = "";
-
-  for (uint64_t feature = 1; feature <= RBD_FEATURE_OBJECT_MAP;
-       feature <<= 1) {
-    if (feature & features) {
-      if (s.size())
-	s += ", ";
-      s += feature_str(feature);
-    }
-  }
-  return s;
-}
-
-static void format_features(Formatter *f, uint64_t features)
-{
-  f->open_array_section("features");
-  for (uint64_t feature = 1; feature <= RBD_FEATURE_OBJECT_MAP;
-       feature <<= 1) {
-    f->dump_string("feature", feature_str(feature));
-  }
-  f->close_section();
-}
-
-static void format_flags(Formatter *f, uint64_t flags)
+static void format_bitmask(Formatter *f, const std::string &name,
+                           const std::map<uint64_t, std::string>& mapping,
+                           uint64_t bitmask)
 {
   int count = 0;
-  std::map<uint64_t, std::string> flag_mapping = boost::assign::map_list_of(
-    RBD_FLAG_OBJECT_MAP_INVALID, "object map invalid");
-
+  std::string group_name(name + "s");
   if (f == NULL) {
-    cout << "\tflags: ";
+    cout << "\t" << group_name << ": ";
   } else {
-    f->open_array_section("flags");
+    f->open_array_section(group_name.c_str());
   }
-  for (std::map<uint64_t, std::string>::iterator it = flag_mapping.begin();
-       it != flag_mapping.end(); ++it) {
-    if ((it->first & flags) == 0) {
+  for (std::map<uint64_t, std::string>::const_iterator it = mapping.begin();
+       it != mapping.end(); ++it) {
+    if ((it->first & bitmask) == 0) {
       continue;
     }
 
@@ -235,7 +200,7 @@ static void format_flags(Formatter *f, uint64_t flags)
       }
       cout << it->second;
     } else {
-      f->dump_string("flag", it->second);
+      f->dump_string(name.c_str(), it->second);
     }
   }
   if (f == NULL) {
@@ -243,6 +208,23 @@ static void format_flags(Formatter *f, uint64_t flags)
   } else {
     f->close_section();
   }
+}
+
+static void format_features(Formatter *f, uint64_t features)
+{
+  std::map<uint64_t, std::string> mapping = boost::assign::map_list_of(
+    RBD_FEATURE_LAYERING, "layering")(
+    RBD_FEATURE_STRIPINGV2, "striping")(
+    RBD_FEATURE_EXCLUSIVE_LOCK, "exclusive")(
+    RBD_FEATURE_OBJECT_MAP, "object map");
+  format_bitmask(f, "feature", mapping, features);
+}
+
+static void format_flags(Formatter *f, uint64_t flags)
+{
+  std::map<uint64_t, std::string> mapping = boost::assign::map_list_of(
+    RBD_FLAG_OBJECT_MAP_INVALID, "object map invalid");
+  format_bitmask(f, "flag", mapping, flags);
 }
 
 struct MyProgressContext : public librbd::ProgressContext {
@@ -477,12 +459,6 @@ static int do_create(librbd::RBD &rbd, librados::IoCtx& io_ctx,
     }
     r = rbd.create(io_ctx, imgname, size, order);
   } else {
-    if ((stripe_unit || stripe_count) &&
-	(stripe_unit != (1ull << *order) && stripe_count != 1)) {
-      features |= RBD_FEATURE_STRIPINGV2;
-    } else {
-      features &= ~RBD_FEATURE_STRIPINGV2;
-    }
     r = rbd.create3(io_ctx, imgname, size, features, order,
 		    stripe_unit, stripe_count);
   }
@@ -494,14 +470,15 @@ static int do_create(librbd::RBD &rbd, librados::IoCtx& io_ctx,
 static int do_clone(librbd::RBD &rbd, librados::IoCtx &p_ioctx,
 		    const char *p_name, const char *p_snapname,
 		    librados::IoCtx &c_ioctx, const char *c_name,
-		    uint64_t features, int *c_order)
+		    uint64_t features, int *c_order,
+                    uint64_t stripe_unit, uint64_t stripe_count)
 {
   if ((features & RBD_FEATURE_LAYERING) != RBD_FEATURE_LAYERING) {
     return -EINVAL;
   }
 
-  return rbd.clone(p_ioctx, p_name, p_snapname, c_ioctx, c_name, features,
-		    c_order);
+  return rbd.clone2(p_ioctx, p_name, p_snapname, c_ioctx, c_name, features,
+		    c_order, stripe_unit, stripe_count);
 }
 
 static int do_flatten(librbd::Image& image)
@@ -590,10 +567,7 @@ static int do_show_info(const char *imgname, librbd::Image& image,
   }
 
   if (!old_format) {
-    if (f)
-      format_features(f, features);
-    else
-      cout << "\tfeatures: " << features_str(features) << std::endl;
+    format_features(f, features);
     format_flags(f, flags);
   }
 
@@ -1472,7 +1446,8 @@ private:
 
 static int do_import(librbd::RBD &rbd, librados::IoCtx& io_ctx,
 		     const char *imgname, int *order, const char *path,
-		     int format, uint64_t features, uint64_t size)
+		     int format, uint64_t features, uint64_t size,
+                     uint64_t stripe_unit, uint64_t stripe_count)
 {
   int fd, r;
   struct stat stat_buf;
@@ -1534,7 +1509,8 @@ static int do_import(librbd::RBD &rbd, librados::IoCtx& io_ctx,
 
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
   }
-  r = do_create(rbd, io_ctx, imgname, size, order, format, features, 0, 0);
+  r = do_create(rbd, io_ctx, imgname, size, order, format, features,
+                stripe_unit, stripe_count);
   if (r < 0) {
     cerr << "rbd: image creation failed" << std::endl;
     goto done;
@@ -2126,6 +2102,71 @@ done:
   return r;
 }
 
+static int do_metadata_list(librbd::Image& image, Formatter *f)
+{
+  map<string, bufferlist> pairs;
+  int r;
+  TextTable tbl;
+
+  r = image.metadata_list("", 0, &pairs);
+  if (r < 0)
+    return r;
+
+  if (f) {
+    f->open_object_section("metadatas");
+  } else {
+    tbl.define_column("Key", TextTable::LEFT, TextTable::LEFT);
+    tbl.define_column("Value", TextTable::LEFT, TextTable::LEFT);
+  }
+
+  if (!pairs.empty()) {
+    bool one = (pairs.size() == 1);
+
+    if (!f) {
+      cout << "There " << (one ? "is " : "are ") << pairs.size()
+           << " metadata" << (one ? "" : "s") << " on this image.\n";
+    }
+
+    for (map<string, bufferlist>::iterator it = pairs.begin();
+         it != pairs.end(); ++it) {
+      if (f) {
+        f->dump_string(it->first.c_str(), it->second.c_str());
+      } else {
+        tbl << it->first << it->second.c_str() << TextTable::endrow;
+      }
+    }
+    if (!f)
+      cout << tbl;
+  }
+
+  if (f) {
+    f->close_section();
+    f->flush(cout);
+  }
+  return 0;
+}
+
+static int do_metadata_set(librbd::Image& image, const char *key,
+                          const char *value)
+{
+  return image.metadata_set(key, value);
+}
+
+static int do_metadata_remove(librbd::Image& image, const char *key)
+{
+  return image.metadata_remove(key);
+}
+
+static int do_metadata_get(librbd::Image& image, const char *key)
+{
+  string s;
+  int r = image.metadata_get(key, &s);
+  if (r < 0)
+    return r;
+  cout << s;
+  return 0;
+}
+
 static int do_copy(librbd::Image &src, librados::IoCtx& dest_pp,
 		   const char *destname)
 {
@@ -2295,18 +2336,19 @@ static int do_kernel_map(const char *poolname, const char *imgname,
   if (r < 0)
     return r;
 
-  for (map<string, string>::const_iterator it = map_options.begin();
-       it != map_options.end();
-       ++it) {
+  for (map<string, string>::iterator it = map_options.begin();
+       it != map_options.end(); ) {
     // for compatibility with < 3.7 kernels, assume that rw is on by
     // default and omit it even if it was specified by the user
     // (see ceph.git commit fb0f1986449b)
-    if (it->first == "rw" && it->second == "rw")
-      continue;
-
-    if (it != map_options.begin())
-      oss << ",";
-    oss << it->second;
+    if (it->first == "rw" && it->second == "rw") {
+      map_options.erase(it++);
+    } else {
+      if (it != map_options.begin())
+        oss << ",";
+      oss << it->second;
+      ++it;
+    }
   }
 
   r = krbd_map(krbd, poolname, imgname, snapname, oss.str().c_str(), &devnode);
@@ -2384,11 +2426,6 @@ static string map_option_int_cb(const char *value_char)
 
 static void put_map_option(const string key, string val)
 {
-  map<string, string>::const_iterator it = map_options.find(key);
-  if (it != map_options.end()) {
-    cerr << "rbd: warning: redefining map option " << key << ": '"
-         << it->second << "' -> '" << val << "'" << std::endl;
-  }
   map_options[key] = val;
 }
 
@@ -2431,6 +2468,12 @@ static int parse_map_options(char *options)
       put_map_option("share", this_char);
     } else if (!strcmp(this_char, "crc") || !strcmp(this_char, "nocrc")) {
       put_map_option("crc", this_char);
+    } else if (!strcmp(this_char, "cephx_require_signatures") ||
+               !strcmp(this_char, "nocephx_require_signatures")) {
+      put_map_option("cephx_require_signatures", this_char);
+    } else if (!strcmp(this_char, "tcp_nodelay") ||
+               !strcmp(this_char, "notcp_nodelay")) {
+      put_map_option("tcp_nodelay", this_char);
     } else if (!strcmp(this_char, "mount_timeout")) {
       if (put_map_option_value("mount_timeout", value_char, map_option_int_cb))
         return 1;
@@ -2485,9 +2528,13 @@ enum {
   OPT_LOCK_REMOVE,
   OPT_BENCH_WRITE,
   OPT_MERGE_DIFF,
+  OPT_METADATA_LIST,
+  OPT_METADATA_SET,
+  OPT_METADATA_GET,
+  OPT_METADATA_REMOVE,
 };
 
-static int get_cmd(const char *cmd, bool snapcmd, bool lockcmd)
+static int get_cmd(const char *cmd, bool snapcmd, bool lockcmd, bool metacmd)
 {
   if (!snapcmd && !lockcmd) {
     if (strcmp(cmd, "ls") == 0 ||
@@ -2556,6 +2603,15 @@ static int get_cmd(const char *cmd, bool snapcmd, bool lockcmd)
       return OPT_SNAP_PROTECT;
     if (strcmp(cmd, "unprotect") == 0)
       return OPT_SNAP_UNPROTECT;
+  } else if (metacmd) {
+    if (strcmp(cmd, "list") == 0)
+      return OPT_METADATA_LIST;
+    if (strcmp(cmd, "set") == 0)
+      return OPT_METADATA_SET;
+    if (strcmp(cmd, "get") == 0)
+      return OPT_METADATA_GET;
+    if (strcmp(cmd, "remove") == 0)
+      return OPT_METADATA_REMOVE;
   } else {
     if (strcmp(cmd, "ls") == 0 ||
         strcmp(cmd, "list") == 0)
@@ -2622,7 +2678,8 @@ int main(int argc, const char **argv)
     *devpath = NULL, *lock_cookie = NULL, *lock_client = NULL,
     *lock_tag = NULL, *output_format = "plain",
     *fromsnapname = NULL,
-    *first_diff = NULL, *second_diff = NULL;
+    *first_diff = NULL, *second_diff = NULL, *key = NULL, *value = NULL;
+  char *cli_map_options = NULL;
   bool lflag = false;
   int pretty_format = 0;
   long long stripe_unit = 0, stripe_count = 0;
@@ -2707,11 +2764,7 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_flag(args, i, "--no-settle", (char *)NULL)) {
       cerr << "rbd: --no-settle is deprecated" << std::endl;
     } else if (ceph_argparse_witharg(args, i, &val, "-o", "--options", (char*)NULL)) {
-      char *map_options = strdup(val.c_str());
-      if (parse_map_options(map_options)) {
-        cerr << "rbd: couldn't parse map options" << std::endl;
-        return EXIT_FAILURE;
-      }
+      cli_map_options = strdup(val.c_str());
     } else if (ceph_argparse_flag(args, i, "--read-only", (char *)NULL)) {
       // --read-only is equivalent to -o ro
       put_map_option("rw", "ro");
@@ -2769,16 +2822,23 @@ int main(int argc, const char **argv)
       cerr << "rbd: which snap command do you want?" << std::endl;
       return EXIT_FAILURE;
     }
-    opt_cmd = get_cmd(*i, true, false);
+    opt_cmd = get_cmd(*i, true, false, false);
   } else if (strcmp(*i, "lock") == 0) {
     i = args.erase(i);
     if (i == args.end()) {
       cerr << "rbd: which lock command do you want?" << std::endl;
       return EXIT_FAILURE;
     }
-    opt_cmd = get_cmd(*i, false, true);
+    opt_cmd = get_cmd(*i, false, true, false);
+  } else if (strcmp(*i, "image-meta") == 0) {
+    i = args.erase(i);
+    if (i == args.end()) {
+      cerr << "rbd: which image-meta command do you want?" << std::endl;
+      return EXIT_FAILURE;
+    }
+    opt_cmd = get_cmd(*i, false, false, true);
   } else {
-    opt_cmd = get_cmd(*i, false, false);
+    opt_cmd = get_cmd(*i, false, false, false);
   }
   if (opt_cmd == OPT_NO_CMD) {
     cerr << "rbd: error parsing command '" << *i << "'; -h or --help for usage" << std::endl;
@@ -2819,6 +2879,7 @@ if (!set_conf_param(v, p1, p2, p3)) { \
       case OPT_MAP:
       case OPT_BENCH_WRITE:
       case OPT_LOCK_LIST:
+      case OPT_METADATA_LIST:
       case OPT_DIFF:
 	SET_CONF_PARAM(v, &imgname, NULL, NULL);
 	break;
@@ -2852,6 +2913,13 @@ if (!set_conf_param(v, p1, p2, p3)) { \
 	break;
       case OPT_LOCK_REMOVE:
 	SET_CONF_PARAM(v, &imgname, &lock_client, &lock_cookie);
+	break;
+      case OPT_METADATA_SET:
+	SET_CONF_PARAM(v, &imgname, &key, &value);
+	break;
+      case OPT_METADATA_GET:
+      case OPT_METADATA_REMOVE:
+	SET_CONF_PARAM(v, &imgname, &key, NULL);
 	break;
     default:
 	assert(0);
@@ -2889,7 +2957,7 @@ if (!set_conf_param(v, p1, p2, p3)) { \
       opt_cmd != OPT_INFO && opt_cmd != OPT_LIST &&
       opt_cmd != OPT_SNAP_LIST && opt_cmd != OPT_LOCK_LIST &&
       opt_cmd != OPT_CHILDREN && opt_cmd != OPT_DIFF &&
-      opt_cmd != OPT_STATUS) {
+      opt_cmd != OPT_METADATA_LIST && opt_cmd != OPT_STATUS) {
     cerr << "rbd: command doesn't use output formatting"
 	 << std::endl;
     return EXIT_FAILURE;
@@ -2941,6 +3009,20 @@ if (!set_conf_param(v, p1, p2, p3)) { \
       opt_cmd != OPT_MERGE_DIFF && !imgname) {
     cerr << "rbd: image name was not specified" << std::endl;
     return EXIT_FAILURE;
+  }
+
+  if (opt_cmd == OPT_MAP) {
+    char *default_map_options = strdup(g_conf->rbd_default_map_options.c_str());
+
+    // parse default options first so they can be overwritten by cli options
+    if (parse_map_options(default_map_options)) {
+      cerr << "rbd: couldn't parse default map options" << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (cli_map_options && parse_map_options(cli_map_options)) {
+      cerr << "rbd: couldn't parse map options" << std::endl;
+      return EXIT_FAILURE;
+    }
   }
 
   if (opt_cmd == OPT_UNMAP && !devpath) {
@@ -3068,11 +3150,14 @@ if (!set_conf_param(v, p1, p2, p3)) { \
        opt_cmd == OPT_EXPORT || opt_cmd == OPT_EXPORT_DIFF || opt_cmd == OPT_COPY ||
        opt_cmd == OPT_DIFF ||
        opt_cmd == OPT_CHILDREN || opt_cmd == OPT_LOCK_LIST ||
+       opt_cmd == OPT_METADATA_SET || opt_cmd == OPT_METADATA_LIST ||
+       opt_cmd == OPT_METADATA_REMOVE || opt_cmd == OPT_METADATA_GET ||
        opt_cmd == OPT_STATUS)) {
 
     if (opt_cmd == OPT_INFO || opt_cmd == OPT_SNAP_LIST ||
 	opt_cmd == OPT_EXPORT || opt_cmd == OPT_EXPORT || opt_cmd == OPT_COPY ||
 	opt_cmd == OPT_CHILDREN || opt_cmd == OPT_LOCK_LIST ||
+        opt_cmd == OPT_METADATA_LIST ||
         opt_cmd == OPT_STATUS || opt_cmd == OPT_WATCH) {
       r = rbd.open_read_only(io_ctx, image, imgname, NULL);
     } else {
@@ -3116,16 +3201,7 @@ if (!set_conf_param(v, p1, p2, p3)) { \
     }
   }
 
-  switch (opt_cmd) {
-  case OPT_LIST:
-    r = do_list(rbd, io_ctx, lflag, formatter.get());
-    if (r < 0) {
-      cerr << "rbd: list: " << cpp_strerror(-r) << std::endl;
-      return -r;
-    }
-    break;
-
-  case OPT_CREATE:
+  if (opt_cmd == OPT_CREATE || opt_cmd == OPT_CLONE || opt_cmd == OPT_IMPORT) {
     if (order && (order < 12 || order > 25)) {
       cerr << "rbd: order must be between 12 (4 KB) and 25 (32 MB)"
 	   << std::endl;
@@ -3137,6 +3213,25 @@ if (!set_conf_param(v, p1, p2, p3)) { \
       usage();
       return EINVAL;
     }
+
+    if ((stripe_unit || stripe_count) &&
+	(stripe_unit != (1ll << order) && stripe_count != 1)) {
+      features |= RBD_FEATURE_STRIPINGV2;
+    } else {
+      features &= ~RBD_FEATURE_STRIPINGV2;
+    }
+  }
+
+  switch (opt_cmd) {
+  case OPT_LIST:
+    r = do_list(rbd, io_ctx, lflag, formatter.get());
+    if (r < 0) {
+      cerr << "rbd: list: " << cpp_strerror(-r) << std::endl;
+      return -r;
+    }
+    break;
+
+  case OPT_CREATE:
     r = do_create(rbd, io_ctx, imgname, size, &order, format, features,
 		  stripe_unit, stripe_count);
     if (r < 0) {
@@ -3146,14 +3241,8 @@ if (!set_conf_param(v, p1, p2, p3)) { \
     break;
 
   case OPT_CLONE:
-    if (order && (order < 12 || order > 25)) {
-      cerr << "rbd: order must be between 12 (4 KB) and 25 (32 MB)"
-	   << std::endl;
-      return EINVAL;
-    }
-
     r = do_clone(rbd, io_ctx, imgname, snapname, dest_io_ctx, destname,
-		 features, &order);
+		 features, &order, stripe_unit, stripe_count);
     if (r < 0) {
       cerr << "rbd: clone error: " << cpp_strerror(-r) << std::endl;
       return -r;
@@ -3372,7 +3461,7 @@ if (!set_conf_param(v, p1, p2, p3)) { \
       return EINVAL;
     }
     r = do_import(rbd, dest_io_ctx, destname, &order, path,
-		  format, features, size);
+		  format, features, size, stripe_unit, stripe_count);
     if (r < 0) {
       cerr << "rbd: import failed: " << cpp_strerror(-r) << std::endl;
       return -r;
@@ -3473,6 +3562,38 @@ if (!set_conf_param(v, p1, p2, p3)) { \
     r = do_bench_write(image, bench_io_size, bench_io_threads, bench_bytes, bench_pattern);
     if (r < 0) {
       cerr << "bench-write failed: " << cpp_strerror(-r) << std::endl;
+      return -r;
+    }
+    break;
+
+  case OPT_METADATA_LIST:
+    r = do_metadata_list(image, formatter.get());
+    if (r < 0) {
+      cerr << "rbd: listing metadata failed: " << cpp_strerror(r) << std::endl;
+      return -r;
+    }
+    break;
+
+  case OPT_METADATA_SET:
+    r = do_metadata_set(image, key, value);
+    if (r < 0) {
+      cerr << "rbd: setting metadata failed: " << cpp_strerror(r) << std::endl;
+      return -r;
+    }
+    break;
+
+  case OPT_METADATA_REMOVE:
+    r = do_metadata_remove(image, key);
+    if (r < 0) {
+      cerr << "rbd: removing metadata failed: " << cpp_strerror(r) << std::endl;
+      return -r;
+    }
+    break;
+
+  case OPT_METADATA_GET:
+    r = do_metadata_get(image, key);
+    if (r < 0) {
+      cerr << "rbd: getting metadata failed: " << cpp_strerror(r) << std::endl;
       return -r;
     }
     break;

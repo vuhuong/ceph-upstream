@@ -280,12 +280,13 @@ namespace librbd {
       return 0;
     }
 
-    void set_flags(librados::ObjectWriteOperation *op, uint64_t flags,
-		   uint64_t mask)
+    void set_flags(librados::ObjectWriteOperation *op, snapid_t snap_id,
+                   uint64_t flags, uint64_t mask)
     {
       bufferlist inbl;
       ::encode(flags, inbl);
       ::encode(mask, inbl);
+      ::encode(snap_id, inbl);
       op->exec("rbd", "set_flags", inbl);
     }
 
@@ -747,6 +748,66 @@ namespace librbd {
       ::encode(new_object_state, in);
       ::encode(current_object_state, in);
       rados_op->exec("rbd", "object_map_update", in);
+    }
+
+    int metadata_set(librados::IoCtx *ioctx, const std::string &oid,
+                     const map<string, bufferlist> &data)
+    {
+      bufferlist in;
+      ::encode(data, in);
+      bufferlist out;
+      return ioctx->exec(oid, "rbd", "metadata_set", in, out);
+    }
+
+    int metadata_remove(librados::IoCtx *ioctx, const std::string &oid,
+                        const std::string &key)
+    {
+      bufferlist in;
+      ::encode(key, in);
+      bufferlist out;
+      return ioctx->exec(oid, "rbd", "metadata_remove", in, out);
+    }
+
+    int metadata_list(librados::IoCtx *ioctx, const std::string &oid,
+                      const std::string &start, uint64_t max_return,
+                      map<string, bufferlist> *pairs)
+    {
+      assert(pairs);
+      bufferlist in, out;
+      ::encode(start, in);
+      ::encode(max_return, in);
+      int r = ioctx->exec(oid, "rbd", "metadata_list", in, out);
+      if (r < 0)
+        return r;
+
+      bufferlist::iterator iter = out.begin();
+      try {
+        ::decode(*pairs, iter);
+      } catch (const buffer::error &err) {
+        return -EBADMSG;
+      }
+
+      return 0;
+    }
+
+    int metadata_get(librados::IoCtx *ioctx, const std::string &oid,
+                     const std::string &key, string *s)
+    {
+      assert(s);
+      bufferlist in, out;
+      ::encode(key, in);
+      int r = ioctx->exec(oid, "rbd", "metadata_get", in, out);
+      if (r < 0)
+        return r;
+
+      bufferlist::iterator iter = out.begin();
+      try {
+        ::decode(*s, iter);
+      } catch (const buffer::error &err) {
+        return -EBADMSG;
+      }
+
+      return 0;
     }
 
   } // namespace cls_client

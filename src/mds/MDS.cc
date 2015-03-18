@@ -572,63 +572,66 @@ void MDS::set_up_admin_socket()
   asok_hook = new MDSSocketHook(this);
   r = admin_socket->register_command("status", "status", asok_hook,
 				     "high-level status of MDS");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("dump_ops_in_flight",
 				     "dump_ops_in_flight", asok_hook,
 				     "show the ops currently in flight");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("ops",
 				     "ops", asok_hook,
 				     "show the ops currently in flight");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("dump_historic_ops", "dump_historic_ops",
 				     asok_hook,
 				     "show slowest recent ops");
+  assert(r == 0);
   r = admin_socket->register_command("scrub_path",
                                      "scrub_path name=path,type=CephString",
                                      asok_hook,
                                      "scrub an inode and output results");
+  assert(r == 0);
   r = admin_socket->register_command("flush_path",
                                      "flush_path name=path,type=CephString",
                                      asok_hook,
                                      "flush an inode (and its dirfrags)");
+  assert(r == 0);
   r = admin_socket->register_command("export dir",
                                      "export dir "
                                      "name=path,type=CephString "
                                      "name=rank,type=CephInt",
                                      asok_hook,
                                      "migrate a subtree to named MDS");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("session evict",
 				     "session evict name=client_id,type=CephString",
 				     asok_hook,
 				     "Evict a CephFS client");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("osdmap barrier",
 				     "osdmap barrier name=target_epoch,type=CephInt",
 				     asok_hook,
 				     "Wait until the MDS has this OSD map epoch");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("session ls",
 				     "session ls",
 				     asok_hook,
 				     "Enumerate connected CephFS clients");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("flush journal",
 				     "flush journal",
 				     asok_hook,
 				     "Flush the journal to the backing store");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("force_readonly",
 				     "force_readonly",
 				     asok_hook,
 				     "Force MDS to read-only mode");
-  assert(0 == r);
+  assert(r == 0);
   r = admin_socket->register_command("get subtrees",
 				     "get subtrees",
 				     asok_hook,
 				     "Return the subtree map");
-  assert(0 == r);
+  assert(r == 0);
 }
 
 void MDS::clean_up_admin_socket()
@@ -705,7 +708,8 @@ void MDS::create_logger()
 
     mds_plb.add_u64_counter(l_mds_request, "request");
     mds_plb.add_u64_counter(l_mds_reply, "reply");
-    mds_plb.add_time_avg(l_mds_reply_latency, "reply_latency");
+    mds_plb.add_time_avg(l_mds_reply_latency, "reply_latency",
+        "Reply latency", "rlat");
     mds_plb.add_u64_counter(l_mds_forward, "forward");
     
     mds_plb.add_u64_counter(l_mds_dir_fetch, "dir_fetch");
@@ -713,14 +717,14 @@ void MDS::create_logger()
     mds_plb.add_u64_counter(l_mds_dir_split, "dir_split");
 
     mds_plb.add_u64(l_mds_inode_max, "inode_max");
-    mds_plb.add_u64(l_mds_inodes, "inodes");
+    mds_plb.add_u64(l_mds_inodes, "inodes", "Inodes", "inos");
     mds_plb.add_u64(l_mds_inodes_top, "inodes_top");
     mds_plb.add_u64(l_mds_inodes_bottom, "inodes_bottom");
     mds_plb.add_u64(l_mds_inodes_pin_tail, "inodes_pin_tail");  
     mds_plb.add_u64(l_mds_inodes_pinned, "inodes_pinned");
-    mds_plb.add_u64_counter(l_mds_inodes_expired, "inodes_expired");
-    mds_plb.add_u64_counter(l_mds_inodes_with_caps, "inodes_with_caps");
-    mds_plb.add_u64_counter(l_mds_caps, "caps");
+    mds_plb.add_u64(l_mds_inodes_expired, "inodes_expired");
+    mds_plb.add_u64(l_mds_inodes_with_caps, "inodes_with_caps");
+    mds_plb.add_u64(l_mds_caps, "caps", "Capabilities", "caps");
     mds_plb.add_u64(l_mds_subtrees, "subtrees");
     
     mds_plb.add_u64_counter(l_mds_traverse, "traverse"); 
