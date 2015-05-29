@@ -27,8 +27,8 @@ extern "C" {
 
 
 static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
-			      struct xio_mempool_obj* mp);
-static inline void xpool_free(uint64_t size, struct xio_mempool_obj* mp);
+			      struct xio_reg_mem* mp);
+static inline void xpool_free(uint64_t size, struct xio_reg_mem* mp);
 
 using ceph::atomic_t;
 
@@ -43,7 +43,7 @@ public:
   static const int MB = 8;
 
   struct xio_piece {
-    struct xio_mempool_obj mp[1];
+    struct xio_reg_mem mp[1];
     struct xio_piece *next;
     int s;
     char payload[MB];
@@ -67,7 +67,7 @@ public:
   void *alloc(size_t _s)
     {
 	void *r;
-	struct xio_mempool_obj mp[1];
+	struct xio_reg_mem mp[1];
 	struct xio_piece *x;
 	int e = xpool_alloc(handle, (sizeof(struct xio_piece)-MB) + _s, mp);
 	if (e) {
@@ -198,7 +198,7 @@ public:
 extern XioPoolStats xp_stats;
 
 static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
-			      struct xio_mempool_obj* mp)
+			      struct xio_reg_mem* mp)
 {
   // try to allocate from the xio pool
   int r = xio_mempool_alloc(pool, size, mp);
@@ -216,7 +216,7 @@ static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
   return 0;
 }
 
-static inline void xpool_free(uint64_t size, struct xio_mempool_obj* mp)
+static inline void xpool_free(uint64_t size, struct xio_reg_mem* mp)
 {
   if (mp->length) {
     if (unlikely(XioPool::trace_mempool))

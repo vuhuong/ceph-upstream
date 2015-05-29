@@ -59,7 +59,7 @@
 #endif
 
 #if defined(HAVE_XIO)
-struct xio_mempool_obj;
+struct xio_reg_mem;
 class XioDispatchHook;
 #endif
 
@@ -526,7 +526,7 @@ public:
 };
 
 #if defined(HAVE_XIO)
-xio_mempool_obj* get_xio_mp(const buffer::ptr& bp);
+xio_reg_mem* get_xio_mp(const buffer::ptr& bp);
 #endif
 
 typedef buffer::ptr bufferptr;
