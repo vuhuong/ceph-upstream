@@ -577,8 +577,8 @@ static inline int
 xio_count_buffers(buffer::list& bl, int& req_size, int& msg_off, int& req_off)
 {
 
-  const std::list<buffer::ptr>& buffers = bl.buffers();
-  list<bufferptr>::const_iterator pb;
+  const buffer::list::ptr_list_t& buffers = bl.get_raw_ptr_list();
+  buffer::list::ptr_list_t::const_iterator pb;
   size_t size, off;
   int result;
   int first = 1;
@@ -624,8 +624,8 @@ xio_place_buffers(buffer::list& bl, XioMsg *xmsg, struct xio_msg*& req,
 		  int ex_cnt, int& msg_off, int& req_off, bl_type type)
 {
 
-  const std::list<buffer::ptr>& buffers = bl.buffers();
-  list<bufferptr>::const_iterator pb;
+  const buffer::list::ptr_list_t& buffers = bl.get_raw_ptr_list();
+  buffer::list::ptr_list_t::const_iterator pb;
   struct xio_iovec_ex* iov;
   size_t size, off;
   const char *data = NULL;
@@ -876,9 +876,9 @@ int XioMessenger::_send_message_impl(Message* m, XioConnection* xcon)
   struct xio_iovec_ex *msg_iov = req->out.pdata_iov.sglist;
 
   if (magic & (MSG_MAGIC_XIO)) {
-    ldout(cct,4) << "payload: " << payload.buffers().size() <<
-      " middle: " << middle.buffers().size() <<
-      " data: " << data.buffers().size() <<
+    ldout(cct,4) << "payload: " << payload.get_num_buffers() <<
+      " middle: " << middle.get_num_buffers() <<
+      " data: " << data.get_num_buffers() <<
       dendl;
   }
 
@@ -910,9 +910,9 @@ int XioMessenger::_send_message_impl(Message* m, XioConnection* xcon)
   /* fixup first msg */
   req = &xmsg->req_0.msg;
 
-  const std::list<buffer::ptr>& header = xmsg->hdr.get_bl().buffers();
+  const buffer::list::ptr_list_t& header = xmsg->hdr.get_bl().get_raw_ptr_list();
   assert(header.size() == 1); /* XXX */
-  list<bufferptr>::const_iterator pb = header.begin();
+  buffer::list::ptr_list_t::const_iterator pb = header.begin();
   req->out.header.iov_base = (char*) pb->c_str();
   req->out.header.iov_len = pb->length();
 
